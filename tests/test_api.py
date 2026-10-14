@@ -2,10 +2,16 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.main import app
+from backend.main import app, configured_cors_origins
 
 
 client = TestClient(app)
+
+
+def test_cors_origins_are_trimmed_and_normalized():
+    assert configured_cors_origins(" https://gst-tax-alpha.vercel.app/ , https://example.com ") == [
+        "https://gst-tax-alpha.vercel.app", "https://example.com"
+    ]
 
 
 def test_inspect_and_process_regression_workbook():

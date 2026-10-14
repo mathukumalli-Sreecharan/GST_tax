@@ -1,6 +1,6 @@
 import type { InspectResponse, ProcessResponse } from "@/lib/types";
 
-const base = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const base = (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000").replace(/\/+$/, "");
 
 async function check<T>(response: Response): Promise<T> {
   if (!response.ok) {

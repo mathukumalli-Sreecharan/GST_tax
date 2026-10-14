@@ -27,9 +27,19 @@ STORAGE = Path(tempfile.gettempdir()) / "gst-ledger-studio"
 STORAGE.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="GST Ledger Studio API", version="1.0.0")
+
+
+def configured_cors_origins(value: str | None = None) -> list[str]:
+    """Parse allowed browser origins, trimming whitespace and trailing slashes."""
+    raw = value if value is not None else os.getenv(
+        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    )
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=configured_cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
