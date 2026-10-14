@@ -158,7 +158,7 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
         new_dimension = ws.column_dimensions[rate_letter]
         if ws.column_dimensions[old_letter].width is not None:
             new_dimension.width = ws.column_dimensions[old_letter].width
-    summary = {5: 0, 18: 0, "unmatched": 0}
+    summary = {5: 0, 12: 0, 18: 0, 28: 0, "unmatched": 0}
     flagged = []
     inv_header = _cell_header(ws, invoice_col, invoice_header_row)
     tax_header = _cell_header(ws, taxable_col, taxable_header_row)

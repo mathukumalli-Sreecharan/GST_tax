@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+SUPPORTED_RATES = (5, 12, 18, 28)
+
 
 @dataclass(frozen=True)
 class RateResult:
@@ -44,11 +46,15 @@ def calculate_rate(invoice_value: Any, taxable_value: Any) -> RateResult:
     if invoice < taxable:
         return RateResult(None, abs(invoice - taxable), True,
                           "Invoice Value is smaller than Taxable Value; verify unexpected charges or multiple GST rates")
-    candidates = [(abs(taxable - invoice * 100 / Decimal(105)), 5),
-                  (abs(taxable - invoice * 100 / Decimal(118)), 18)]
+    candidates = [
+        (abs(taxable - invoice * 100 / Decimal(100 + rate)), rate)
+        for rate in SUPPORTED_RATES
+    ]
     candidates.sort(key=lambda item: item[0])
     if candidates[0][0] == candidates[1][0]:
-        return RateResult(None, candidates[0][0], True, "Equally close to 5% and 18%; ambiguous")
+        nearest_rates = [rate for difference, rate in candidates if difference == candidates[0][0]]
+        rates = " and ".join(f"{rate}%" for rate in nearest_rates)
+        return RateResult(None, candidates[0][0], True, f"Equally close to {rates}; ambiguous")
     difference, rate = candidates[0]
     if difference >= Decimal(50):
         return RateResult(None, difference, True,

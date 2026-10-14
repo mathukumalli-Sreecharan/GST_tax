@@ -1,6 +1,8 @@
 from pathlib import Path
+from io import BytesIO
 
 from fastapi.testclient import TestClient
+from openpyxl import Workbook, load_workbook
 
 from backend.main import app, configured_cors_origins
 
@@ -49,6 +51,41 @@ def test_inspect_and_process_regression_workbook():
 def test_download_rejects_unknown_file_id():
     response = client.get("/api/excel/download/not-a-real-id")
     assert response.status_code == 404
+
+
+def test_api_reports_all_four_rates_and_exports_rate_column():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Invoices"
+    sheet.append(["Invoice Value", "Taxable Value"])
+    for rate in (5, 12, 18, 28):
+        sheet.append([100 + rate, 100])
+    stream = BytesIO()
+    workbook.save(stream)
+
+    response = client.post("/api/excel/process", files={"file": ("four-rates.xlsx", stream.getvalue(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, data={
+            "worksheet": "Invoices", "first_data_row": "2", "invoice_col": "1", "taxable_col": "2",
+            "invoice_header_row": "1", "taxable_header_row": "1",
+        })
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert [result["summary"][key] for key in
+            ("five_percent", "twelve_percent", "eighteen_percent", "twenty_eight_percent")] == [1, 1, 1, 1]
+    assert all(row["status"] == "MATCHED" for row in result["rows"])
+    assert all(row["expected_12"] and row["difference_28"] for row in result["rows"])
+
+    output = client.get(f"/api/excel/download/{result['file_id']}")
+    assert output.status_code == 200
+    exported = load_workbook(BytesIO(output.content), data_only=False)
+    exported_sheet = exported["Invoices"]
+    assert [exported_sheet.cell(1, column).value for column in (1, 2, 3)] == [
+        "Invoice Value", "Taxable Value", "Rate(%)"
+    ]
+    assert [exported_sheet.cell(row, 3).value for row in range(2, 6)] == [5, 12, 18, 28]
+    assert [exported_sheet.cell(row, 1).value for row in range(2, 6)] == [105, 112, 118, 128]
+    assert [exported_sheet.cell(row, 2).value for row in range(2, 6)] == [100, 100, 100, 100]
+    exported.close()
 
 
 def test_api_rejects_non_xlsx_upload():

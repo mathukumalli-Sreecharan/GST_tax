@@ -29,9 +29,13 @@ export type ResultRow = {
   rate: number | null;
   difference: string;
   difference_5: string;
+  difference_12: string;
   difference_18: string;
+  difference_28: string;
   expected_5: string;
+  expected_12: string;
   expected_18: string;
+  expected_28: string;
   status: "MATCHED" | "REVIEW REQUIRED" | "UNMATCHED" | "INVALID" | "AMBIGUOUS";
   reason: string;
   invoice_column: number;
@@ -48,7 +52,7 @@ export type ProcessResponse = {
   file_id: string;
   filename: string;
   worksheet: string;
-  summary: { total: number; matched: number; five_percent: number; eighteen_percent: number; review_required: number; unmatched: number; status_counts: Record<string, number> };
+  summary: { total: number; matched: number; five_percent: number; twelve_percent: number; eighteen_percent: number; twenty_eight_percent: number; review_required: number; unmatched: number; status_counts: Record<string, number> };
   rows: ResultRow[];
   verification: ResultRow[];
   rate_column: { letter: string; index: number };

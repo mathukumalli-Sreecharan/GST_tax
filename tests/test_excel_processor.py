@@ -24,6 +24,10 @@ def test_detection_varied_positions_and_workbook_preservation(tmp_path):
     ws["E4"] = 100
     ws["B5"] = 118
     ws["E5"] = 100
+    ws["B6"] = 112
+    ws["E6"] = 100
+    ws["B7"] = 128
+    ws["E7"] = 100
     ws["A4"] = "kept"
     ws["A4"].font = Font(bold=True)
     ws["A4"].fill = PatternFill("solid", fgColor="FFFF00")
@@ -46,6 +50,7 @@ def test_detection_varied_positions_and_workbook_preservation(tmp_path):
     assert out.sheetnames == ["B2B", "Other"]
     assert ws["F3"].value == "Rate(%)"
     assert ws["F4"].value == 5 and ws["F5"].value == 18
+    assert ws["F6"].value == 12 and ws["F7"].value == 28
     assert ws["A4"].value == "kept" and ws["A4"].font.bold
     assert ws.column_dimensions["A"].width == 27
     assert ws.row_dimensions[4].height == 30 and ws.row_dimensions[6].hidden

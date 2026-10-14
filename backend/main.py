@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from excel_processor import PreservationError, detect_columns, detect_rate_column, process_workbook
-from gst_calculator import calculate_rate, as_decimal
+from gst_calculator import SUPPORTED_RATES, calculate_rate, as_decimal
 from verification import report_csv
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -216,10 +216,12 @@ async def process_excel(
                     continue
                 calc = calculate_rate(invoice_raw, taxable_raw)
                 inv = as_decimal(invoice_raw)
-                expected5 = inv * 100 / 105 if inv is not None else None
-                expected18 = inv * 100 / 118 if inv is not None else None
-                diff5 = abs(as_decimal(taxable_raw) - expected5) if as_decimal(taxable_raw) is not None and expected5 is not None else None
-                diff18 = abs(as_decimal(taxable_raw) - expected18) if as_decimal(taxable_raw) is not None and expected18 is not None else None
+                taxable_decimal = as_decimal(taxable_raw)
+                expected = {rate: inv * 100 / (100 + rate) if inv is not None else None
+                            for rate in SUPPORTED_RATES}
+                differences = {rate: abs(taxable_decimal - value)
+                               if taxable_decimal is not None and value is not None else None
+                               for rate, value in expected.items()}
                 status = ("AMBIGUOUS" if "ambiguous" in calc.message.lower() else
                           "INVALID" if calc.rate is None and (inv is None or as_decimal(taxable_raw) is None or inv <= 0 or as_decimal(taxable_raw) <= 0 or inv < as_decimal(taxable_raw)) else
                           "UNMATCHED" if calc.rate is None else "REVIEW REQUIRED" if calc.flagged else "MATCHED")
@@ -227,10 +229,10 @@ async def process_excel(
                              "invoice_value": str(invoice_raw) if invoice_raw is not None else "",
                              "taxable_value": str(taxable_raw) if taxable_raw is not None else "",
                              "rate": calc.rate, "difference": str(calc.difference) if calc.difference is not None else "",
-                             "difference_5": str(diff5) if diff5 is not None else "",
-                             "difference_18": str(diff18) if diff18 is not None else "",
-                             "expected_5": str(expected5) if expected5 is not None else "",
-                             "expected_18": str(expected18) if expected18 is not None else "",
+                             **{f"difference_{rate}": str(differences[rate]) if differences[rate] is not None else ""
+                                for rate in SUPPORTED_RATES},
+                             **{f"expected_{rate}": str(expected[rate]) if expected[rate] is not None else ""
+                                for rate in SUPPORTED_RATES},
                              "status": status, "reason": calc.message,
                              "invoice_column": invoice_col, "invoice_letter": get_column_letter(invoice_col),
                              "invoice_header": str(original_ws.cell(inv_header, invoice_col).value or f"Column {get_column_letter(invoice_col)}"),
@@ -246,7 +248,9 @@ async def process_excel(
                          for status in ("MATCHED", "REVIEW REQUIRED", "UNMATCHED", "INVALID", "AMBIGUOUS")}
         summary = {"total": len(rows), "matched": matches,
                    "five_percent": sum(1 for row in rows if row["rate"] == 5),
+                   "twelve_percent": sum(1 for row in rows if row["rate"] == 12),
                    "eighteen_percent": sum(1 for row in rows if row["rate"] == 18),
+                   "twenty_eight_percent": sum(1 for row in rows if row["rate"] == 28),
                    "review_required": status_counts["REVIEW REQUIRED"] + status_counts["INVALID"] + status_counts["AMBIGUOUS"],
                    "unmatched": status_counts["UNMATCHED"], "status_counts": status_counts}
         flagged_rows = [row for row in rows if row["status"] != "MATCHED"]
