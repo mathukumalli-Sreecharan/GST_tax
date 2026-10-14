@@ -44,7 +44,7 @@ export function DataTable<T extends object>({ rows, columns, onRowClick, statusF
       <span style={{ color: "#64748b", fontSize: 10 }}>{allCount.toLocaleString()} records</span>
     </div>
     <div className="data-wrap"><table className="data-table">
-      <thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>
+      <thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id} className={["invoice_value", "taxable_value", "difference"].includes(header.column.id) ? "numeric-heading" : undefined}>
         {header.isPlaceholder ? null : <button type="button" onClick={header.column.getToggleSortingHandler()}
           aria-label={`Sort by ${String(header.column.columnDef.header ?? "column")}`} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "none", border: 0, color: "inherit", padding: 0, fontWeight: "inherit" }}>
           {flexRender(header.column.columnDef.header, header.getContext())}
@@ -53,8 +53,8 @@ export function DataTable<T extends object>({ rows, columns, onRowClick, statusF
       </th>)}</tr>)}</thead>
       <tbody>{table.getRowModel().rows.map((row) => <tr key={row.id} className={onRowClick ? "click-row" : undefined}
         onClick={() => onRowClick?.(row.original)} tabIndex={onRowClick ? 0 : undefined}
-        onKeyDown={(event) => { if (onRowClick && (event.key === "Enter" || event.key === " ")) onRowClick(row.original); }}>
-        {row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+        onKeyDown={(event) => { if (onRowClick && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onRowClick(row.original); } }}>
+        {row.getVisibleCells().map((cell) => <td key={cell.id} className={["invoice_value", "taxable_value", "difference"].includes(cell.column.id) ? "numeric-cell" : undefined}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
       </tr>)}{table.getRowModel().rows.length === 0 && <tr><td colSpan={columns.length} style={{ textAlign: "center", height: 70, color: "#64748b" }}>{emptyText}</td></tr>}</tbody>
     </table></div>
     <div className="pagination"><span>Page {table.getState().pagination.pageIndex + 1} of {Math.max(1, table.getPageCount())}</span>

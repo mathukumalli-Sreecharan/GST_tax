@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CellContext, ColumnDef } from "@tanstack/react-table";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -35,6 +35,28 @@ function rateCount(summary: ProcessResponse["summary"], rate: SupportedRate): nu
 function Status({ status }: { status: ResultRow["status"] }) {
   return <span className={`status ${status.replaceAll(" ", "_")}`}>{status}</span>;
 }
+
+function formatDifference(value: string) {
+  if (!value) return "—";
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount)
+    : value;
+}
+
+function OpeningIntro({ visible, onSkip }: { visible: boolean; onSkip: () => void }) {
+  return <div className={`opening-intro ${visible ? "visible" : "leaving"}`} aria-label="GST Ledger Studio introduction">
+    <div className="opening-grid" aria-hidden="true" />
+    <div className="opening-brand">
+      <span className="opening-mark"><FileSpreadsheet size={27} strokeWidth={1.25} /></span>
+      <span className="opening-rule" />
+      <div className="opening-name">GST LEDGER STUDIO</div>
+      <div className="opening-subtitle">FINANCIAL DATA AUTOMATION</div>
+      <span className="opening-rule bottom" />
+    </div>
+    <button type="button" className="intro-skip" onClick={onSkip}>Skip introduction</button>
+  </div>;
+}
 function metric(label: string, value: number, note: string, tone = "") {
   return <div className="metric" key={label}><div className="metric-label">{label}</div><div className="metric-value" style={tone ? { color: tone } : undefined}>{value.toLocaleString()}</div><div className="metric-note">{note}</div></div>;
 }
@@ -58,7 +80,23 @@ export default function Home() {
   const [rateAction, setRateAction] = useState<"keep" | "recalculate">("keep");
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const [selectedVerification, setSelectedVerification] = useState<ResultRow | null>(null);
+  const [introVisible, setIntroVisible] = useState(false);
+  const [introSequence, setIntroSequence] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const introKey = "gst-ledger-studio:intro:v1";
+    try {
+      if (window.sessionStorage.getItem(introKey) || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      window.sessionStorage.setItem(introKey, "shown");
+    } catch {
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    }
+    setIntroVisible(true);
+    setIntroSequence(true);
+    window.setTimeout(() => setIntroVisible(false), 2300);
+    window.setTimeout(() => setIntroSequence(false), 2600);
+  }, []);
 
   const activeSheet: SheetInfo | undefined = inspection?.sheets.find((sheet) => sheet.name === sheetName);
   const mappingForm = useForm<MappingValues>({ resolver: zodResolver(mappingSchema), defaultValues: { invoiceCol: 1, taxableCol: 2 } });
@@ -124,7 +162,8 @@ export default function Home() {
     if (!result) return;
     try {
       await downloadResult(result.file_id, kind, kind === "download" ? result.filename : `verification_${file?.name.replace(/\.xlsx$/i, "") ?? "report"}.csv`);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Download failed."); }
+      setSuccess(kind === "download" ? "Updated Excel downloaded successfully." : "Verification report downloaded successfully.");
+    } catch (cause) { setSuccess(""); setError(cause instanceof Error ? cause.message : "Download failed."); }
   };
 
   const previewColumns = useMemo<ColumnDef<Record<string, unknown>, unknown>[]>(() => [
@@ -146,7 +185,7 @@ export default function Home() {
     { accessorKey: "invoice_value", header: "Invoice value" },
     { accessorKey: "taxable_value", header: "Taxable value" },
     { accessorKey: "rate", header: "Rate(%)", cell: (ctx) => ctx.getValue() == null ? "—" : `${ctx.getValue()}%` },
-    { accessorKey: "difference", header: "Difference (₹)", cell: (ctx) => ctx.getValue() || "—" },
+    { accessorKey: "difference", header: "Difference (₹)", cell: (ctx) => formatDifference(String(ctx.getValue() ?? "")) },
     { accessorKey: "status", header: "Status", cell: (ctx) => <Status status={ctx.getValue() as ResultRow["status"]} /> },
   ], []);
   const verificationColumns = useMemo<ColumnDef<ResultRow, unknown>[]>(() => [
@@ -155,13 +194,13 @@ export default function Home() {
     { accessorKey: "invoice_value", header: "Invoice value" },
     { accessorKey: "taxable_value", header: "Taxable value" },
     { accessorKey: "rate", header: "Rate(%)", cell: (ctx) => ctx.getValue() == null ? "—" : `${ctx.getValue()}%` },
-    { accessorKey: "difference", header: "Difference (₹)", cell: (ctx) => ctx.getValue() || "—" },
+    { accessorKey: "difference", header: "Difference (₹)", cell: (ctx) => formatDifference(String(ctx.getValue() ?? "")) },
     { accessorKey: "status", header: "Status", cell: (ctx) => <Status status={ctx.getValue() as ResultRow["status"]} /> },
     { accessorKey: "reason", header: "Reason" },
   ], []);
 
   const pageText: Record<PageName, string> = {
-    Dashboard: "Current local processing session and operational summary.",
+    Dashboard: "Current processing session and operational summary.",
     "Process Excel": "Upload, map columns, calculate, and review the workbook.",
     Verification: "Review exceptions and inspect the source row references.",
     Settings: "Read-only calculation and workbook handling policies.",
@@ -172,7 +211,7 @@ export default function Home() {
     onDragLeave={() => setDragging(false)}
     onDrop={(event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setDragging(false); void selectFile(event.dataTransfer.files[0]); }}>
     <div><Upload size={22} className="empty-icon" /><div className="upload-title">Drop an Excel workbook here</div>
-      <div className="upload-meta">.xlsx only · processed locally · maximum 20 MB</div>
+      <div className="upload-meta">.xlsx only · FastAPI processing · maximum 20 MB</div>
       <button className="btn btn-small" type="button" onClick={() => inputRef.current?.click()}>Browse files</button>
       <input ref={inputRef} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden
         onChange={(event: ChangeEvent<HTMLInputElement>) => { const selected = event.target.files?.[0]; event.target.value = ""; void selectFile(selected); }} />
@@ -233,14 +272,14 @@ export default function Home() {
     <div className="workflow">{["Upload", "Column mapping", "Process", "Results"].map((label, index) => <div key={label} className={`step ${stage === index ? "active" : stage > index ? "done" : ""}`}><span className="step-index">{stage > index ? <Check size={12} /> : index + 1}</span>{label}</div>)}</div>
     {error && <div role="alert" className="inline-error" style={{ marginBottom: 12, display: "flex", gap: 8 }}><AlertCircle size={14} />{error}</div>}
     {success && stage === 3 && <div className="success-note" style={{ marginBottom: 12 }}>{success}</div>}
-    {stage === 0 && <section className="panel"><div className="panel-head"><div><h2>Upload workbook</h2><p className="subtext" style={{ marginTop: 4 }}>Excel files are inspected and processed on this computer.</p></div></div><div className="panel-body">{uploadArea}{busy && <div className="loading"><span className="spinner" />Reading worksheet metadata…</div>}{file && !busy && <div className="success-note" style={{ marginTop: 10 }}>{file.name} · {(file.size / 1024).toFixed(1)} KB</div>}</div></section>}
+    {stage === 0 && <section className="panel"><div className="panel-head"><div><h2>Upload workbook</h2><p className="subtext" style={{ marginTop: 4 }}>The selected workbook is sent to the configured FastAPI service for inspection and processing.</p></div></div><div className="panel-body">{uploadArea}{busy && <div className="loading"><span className="spinner" />Reading worksheet metadata…</div>}{file && !busy && <div className="success-note" style={{ marginTop: 10 }}>{file.name} · {(file.size / 1024).toFixed(1)} KB</div>}</div></section>}
     {stage === 1 && <><div className="panel" style={{ marginBottom: 12 }}><div className="panel-head"><div><h2>Review column mapping</h2><p className="subtext" style={{ marginTop: 4 }}>{file?.name} · {((file?.size ?? 0) / 1024).toLocaleString()} KB</p></div><button className="btn btn-small" onClick={() => { setStage(0); setError(""); }}><RotateCw size={13} />Change file</button></div><div className="panel-body">{mappingView}<div className="result-actions" style={{ justifyContent: "flex-end", marginTop: 14 }}><button className="btn btn-primary" onClick={() => { const validation = mappingSchema.safeParse({ invoiceCol, taxableCol }); if (!validation.success) setError(validation.error.issues[0]?.message ?? "Select valid columns."); else { setError(""); setStage(2); } }}>Continue to processing<ArrowRight size={14} /></button></div></div></div></>}
     {stage === 2 && <div className="panel"><div className="panel-head"><div><h2>Calculate GST rates</h2><p className="subtext" style={{ marginTop: 4 }}>Compare each row against supported 5%, 12%, 18%, and 28% GST rates.</p></div></div><div className="panel-body">
       <div className="mapping-row"><strong>Workbook</strong><span className="code-ref">{sheetName}</span><span>{file?.name}</span></div>
       <div className="mapping-row"><strong>Invoice Value</strong><span className="code-ref">{activeSheet?.columns.find((column) => column.index === Number(invoiceCol))?.letter} · {invoiceCol}</span><span>{firstDataRow.toLocaleString()} first data row</span></div>
       <div className="mapping-row"><strong>Taxable Value</strong><span className="code-ref">{activeSheet?.columns.find((column) => column.index === Number(taxableCol))?.letter} · {taxableCol}</span><span>{activeSheet?.existing_rate ? "Existing rate column will be reused" : `New column ${activeSheet?.columns.find((column) => column.index === Number(taxableCol) + 1)?.letter ?? "after Taxable Value"}`}</span></div>
       {activeSheet?.existing_rate && rateAction === "recalculate" && !confirmOverwrite && <div className="inline-alert" style={{ marginTop: 12 }}>Confirm overwrite in Column Mapping before recalculating existing rates.</div>}
-      {busy ? <div className="loading"><span className="spinner" />Processing workbook locally…</div> : <div className="result-actions" style={{ marginTop: 18 }}><button className="btn" onClick={() => setStage(1)}>Back to mapping</button><button className="btn btn-primary" onClick={() => void doProcess()} disabled={!file || !activeSheet || (Boolean(activeSheet.existing_rate && rateAction === "recalculate") && !confirmOverwrite)}><BadgeCheck size={14} />Calculate GST Rates</button></div>}
+      {busy ? <div className="loading"><span className="spinner" />Processing workbook via FastAPI…</div> : <div className="result-actions" style={{ marginTop: 18 }}><button className="btn" onClick={() => setStage(1)}>Back to mapping</button><button className="btn btn-primary" onClick={() => void doProcess()} disabled={!file || !activeSheet || (Boolean(activeSheet.existing_rate && rateAction === "recalculate") && !confirmOverwrite)}><BadgeCheck size={14} />Calculate GST Rates</button></div>}
     </div></div>}
     {stage === 3 && result && <ResultsView result={result} columns={resultColumns} onDownload={() => void triggerDownload("download")} onReport={() => void triggerDownload("report")} onRowClick={(row) => { setSelectedVerification(row); navigate("Verification"); }} onNew={() => { setStage(0); setFile(null); setInspection(null); setPage("Process Excel"); setSuccess(""); }} />}
   </>;
@@ -258,31 +297,33 @@ export default function Home() {
     {!result ? <div className="empty-state"><CircleHelp size={22} className="empty-icon" /><h2>No verification session</h2><p className="subtext" style={{ margin: "6px 0 14px" }}>Process a workbook to see flagged rows here.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}>Open processing workspace</button></div> : <div className="detail-layout"><section className="panel"><div className="panel-head"><div><h2>Flagged workbook rows</h2><p className="subtext" style={{ marginTop: 4 }}>Select a row to inspect rate comparison details.</p></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.verification} columns={verificationColumns} statusFilter onRowClick={setSelectedVerification} emptyText="No verification warnings." /></div></section>
       {selectedVerification && <aside className="panel detail-panel"><div className="panel-head"><div><h2>Row {selectedVerification.excel_row} details</h2><p className="subtext" style={{ marginTop: 4 }}>{selectedVerification.invoice_number || "Invoice number unavailable"}</p></div><button className="btn btn-small" aria-label="Close row details" onClick={() => setSelectedVerification(null)}><X size={13} /></button></div><div className="panel-body"><div style={{ marginBottom: 12 }}><Status status={selectedVerification.status} /></div><div className="detail-list">
         <Detail label="Worksheet" value={result.worksheet} /><Detail label="Actual Excel row" value={String(selectedVerification.excel_row)} />
+        <Detail label="Invoice Value" value={formatDifference(selectedVerification.invoice_value)} />
+        <Detail label="Taxable Value" value={formatDifference(selectedVerification.taxable_value)} />
         <Detail label="Invoice Value column" value={`${selectedVerification.invoice_header} · ${selectedVerification.invoice_letter} (column ${selectedVerification.invoice_column})`} />
         <Detail label="Taxable Value column" value={`${selectedVerification.taxable_header} · ${selectedVerification.taxable_letter} (column ${selectedVerification.taxable_column})`} />
         <Detail label="Rate(%) column" value={`${selectedVerification.rate_letter} (column ${selectedVerification.rate_column})`} />
         <Detail label="Expected taxable at 5%" value={selectedVerification.expected_5 || "Unavailable"} />
-        <Detail label="Difference at 5%" value={selectedVerification.difference_5 || "Unavailable"} />
+        <Detail label="Difference at 5%" value={formatDifference(selectedVerification.difference_5)} />
         <Detail label="Expected taxable at 12%" value={selectedVerification.expected_12 || "Unavailable"} />
-        <Detail label="Difference at 12%" value={selectedVerification.difference_12 || "Unavailable"} />
+        <Detail label="Difference at 12%" value={formatDifference(selectedVerification.difference_12)} />
         <Detail label="Expected taxable at 18%" value={selectedVerification.expected_18 || "Unavailable"} />
-        <Detail label="Difference at 18%" value={selectedVerification.difference_18 || "Unavailable"} />
+        <Detail label="Difference at 18%" value={formatDifference(selectedVerification.difference_18)} />
         <Detail label="Expected taxable at 28%" value={selectedVerification.expected_28 || "Unavailable"} />
-        <Detail label="Difference at 28%" value={selectedVerification.difference_28 || "Unavailable"} />
+        <Detail label="Difference at 28%" value={formatDifference(selectedVerification.difference_28)} />
         <Detail label="Assigned rate" value={selectedVerification.rate == null ? "Unmatched" : `${selectedVerification.rate}%`} />
         <Detail label="Explanation" value={selectedVerification.reason || "Closest supported rate is within the automatic match tolerance."} />
       </div><div className="inline-alert" style={{ marginTop: 13 }}>Once again verify the following row.</div></div></aside>}
     </div>}
   </>;
 
-  const settings = () => <><div className="page-head"><div><div className="eyebrow">APPLICATION POLICY</div><h1>Settings</h1><p className="subtext">Validated calculation settings are read-only.</p></div><ShieldCheck size={18} color="#24744c" /></div><div className="settings-grid"><section className="panel"><div className="panel-head"><h2>Calculation policy</h2></div><div className="panel-body"><Setting label="Supported GST rates" value="5%, 12%, 18%, and 28%" /><Setting label="Automatic match tolerance" value="Less than ₹1" /><Setting label="Verification threshold" value="₹1 to less than ₹50" /><Setting label="Unmatched threshold" value="₹50 or greater" /><Setting label="Arithmetic" value="Decimal based (existing behavior)" /></div></section><section className="panel"><div className="panel-head"><h2>Workbook preservation</h2></div><div className="panel-body"><Setting label="Supported input format" value=".xlsx" /><Setting label="Processing mode" value="Local OpenPyXL" /><Setting label="Output structure" value="Rate(%) after Taxable Value" /><Setting label="Verification output" value="Separate CSV report" /><Setting label="Upload limit" value="20 MB" /><p className="subtext" style={{ marginTop: 12 }}>Workbooks containing unsupported features or formulas that cannot be safely updated are rejected with an explanation. Files are processed locally and are not sent to a hosted service.</p></div></section></div></>;
+  const settings = () => <><div className="page-head"><div><div className="eyebrow">APPLICATION POLICY</div><h1>Settings</h1><p className="subtext">Validated calculation settings are read-only.</p></div><ShieldCheck size={18} color="#24744c" /></div><div className="settings-grid"><section className="panel"><div className="panel-head"><h2>Calculation policy</h2></div><div className="panel-body"><Setting label="Supported GST rates" value="5%, 12%, 18%, and 28%" /><Setting label="Automatic match tolerance" value="Less than ₹1" /><Setting label="Verification threshold" value="₹1 to less than ₹50" /><Setting label="Unmatched threshold" value="₹50 or greater" /><Setting label="Arithmetic" value="Decimal based (existing behavior)" /></div></section><section className="panel"><div className="panel-head"><h2>Workbook preservation</h2></div><div className="panel-body"><Setting label="Supported input format" value=".xlsx" /><Setting label="Processing mode" value="FastAPI + OpenPyXL" /><Setting label="Output structure" value="Rate(%) after Taxable Value" /><Setting label="Verification output" value="Separate CSV report" /><Setting label="Upload limit" value="20 MB" /><p className="subtext" style={{ marginTop: 12 }}>Workbooks are sent to the configured FastAPI service. Unsupported features or formulas that cannot be safely updated are rejected with an explanation.</p></div></section></div></>;
 
-  return <div className="shell">
-    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="brand"><span className="brand-mark"><BarChart3 size={16} /></span><span>GST Ledger Studio</span></div><div className="nav-label">Workspace</div><nav className="nav-list" aria-label="Main navigation">{pages.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${page === name ? "active" : ""}`} onClick={() => navigate(name)}><Icon size={15} strokeWidth={1.8} />{name}</button>)}</nav><div className="local-note"><span className="local-dot" />Local processing enabled</div></aside>
-    <main className="main"><header className="topbar"><div style={{ display: "flex", alignItems: "center", gap: 10 }}><button className="btn btn-small mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={15} /></button><div><div className="top-title">{page}</div><div className="top-subtitle">{pageText[page]}</div></div></div><div className="top-right"><span className="local-pill"><span className="local-dot" />Local processing</span><span className="file-chip" title={file?.name}>{file?.name ?? "No workbook selected"}</span></div></header>
+  return <><OpeningIntro visible={introVisible} onSkip={() => { setIntroVisible(false); setIntroSequence(false); }} /><div className={`shell ${introSequence ? "intro-reveal" : ""}`}>
+    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="brand"><span className="brand-mark"><BarChart3 size={16} /></span><span>GST Ledger Studio</span></div><div className="nav-label">Workspace</div><nav className="nav-list" aria-label="Main navigation">{pages.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${page === name ? "active" : ""}`} onClick={() => navigate(name)}><Icon size={15} strokeWidth={1.8} />{name}</button>)}</nav><div className="local-note"><span className="local-dot" />FastAPI processing</div></aside>
+    <main className="main"><header className="topbar"><div style={{ display: "flex", alignItems: "center", gap: 10 }}><button className="btn btn-small mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={15} /></button><div><div className="top-title">{page}</div><div className="top-subtitle">{pageText[page]}</div></div></div><div className="top-right"><span className="local-pill"><span className="local-dot" />FastAPI processing</span><span className="file-chip" title={file?.name}>{file?.name ?? "No workbook selected"}</span></div></header>
       <div className="content">{page === "Dashboard" && dashboard()}{page === "Process Excel" && processPage()}{page === "Verification" && verification()}{page === "Settings" && settings()}</div>
     </main>
-  </div>;
+  </div></>;
 }
 
 function Detail({ label, value }: { label: string; value: string }) { return <div className="detail-item"><div className="detail-label">{label}</div><div className="detail-value">{value}</div></div>; }
@@ -303,6 +344,6 @@ function ResultsView({ result, columns, onDownload, onReport, onRowClick, onNew 
 }) {
   const summary = result.summary;
   return <><SummaryMetrics summary={summary} />
-    <section className="panel"><div className="panel-head"><div><h2>Processed rows</h2><p className="subtext" style={{ marginTop: 4 }}>{result.filename} · {result.worksheet}</p></div><div className="result-actions"><button className="btn btn-small" onClick={onNew}><Upload size={13} />Process another</button><button className="btn btn-small" onClick={onReport}><ArrowDownToLine size={13} />Verification report</button><button className="btn btn-small btn-primary" onClick={onDownload}><ArrowDownToLine size={13} />Updated Excel</button></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.rows} columns={columns} statusFilter onRowClick={onRowClick} emptyText="No invoice rows found." /></div></section>
+    <section className="panel"><div className="panel-head"><div><h2>Processed rows</h2><p className="subtext" style={{ marginTop: 4 }}>{result.filename} · {result.worksheet}</p></div><div className="result-actions"><button className="btn btn-small" onClick={onNew}><Upload size={13} />Process another</button><button className="btn btn-small btn-primary" onClick={onDownload}><ArrowDownToLine size={13} />Download Updated Excel</button><button className="btn btn-small" onClick={onReport}><ArrowDownToLine size={13} />Verification report</button></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.rows} columns={columns} statusFilter onRowClick={onRowClick} emptyText="No invoice rows found." /></div></section>
   </>;
 }
