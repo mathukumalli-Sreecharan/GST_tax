@@ -246,11 +246,14 @@ async def process_excel(
             workbook.close()
         status_counts = {status: sum(1 for row in rows if row["status"] == status)
                          for status in ("MATCHED", "REVIEW REQUIRED", "UNMATCHED", "INVALID", "AMBIGUOUS")}
+        rate_counts = {str(rate): sum(1 for row in rows if row["rate"] == rate)
+                       for rate in SUPPORTED_RATES}
         summary = {"total": len(rows), "matched": matches,
-                   "five_percent": sum(1 for row in rows if row["rate"] == 5),
-                   "twelve_percent": sum(1 for row in rows if row["rate"] == 12),
-                   "eighteen_percent": sum(1 for row in rows if row["rate"] == 18),
-                   "twenty_eight_percent": sum(1 for row in rows if row["rate"] == 28),
+                   "rate_counts": rate_counts,
+                   "five_percent": rate_counts["5"],
+                   "twelve_percent": rate_counts["12"],
+                   "eighteen_percent": rate_counts["18"],
+                   "twenty_eight_percent": rate_counts["28"],
                    "review_required": status_counts["REVIEW REQUIRED"] + status_counts["INVALID"] + status_counts["AMBIGUOUS"],
                    "unmatched": status_counts["UNMATCHED"], "status_counts": status_counts}
         flagged_rows = [row for row in rows if row["status"] != "MATCHED"]

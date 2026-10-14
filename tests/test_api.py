@@ -70,6 +70,7 @@ def test_api_reports_all_four_rates_and_exports_rate_column():
         })
     assert response.status_code == 200, response.text
     result = response.json()
+    assert result["summary"]["rate_counts"] == {"5": 1, "12": 1, "18": 1, "28": 1}
     assert [result["summary"][key] for key in
             ("five_percent", "twelve_percent", "eighteen_percent", "twenty_eight_percent")] == [1, 1, 1, 1]
     assert all(row["status"] == "MATCHED" for row in result["rows"])
@@ -86,6 +87,22 @@ def test_api_reports_all_four_rates_and_exports_rate_column():
     assert [exported_sheet.cell(row, 1).value for row in range(2, 6)] == [105, 112, 118, 128]
     assert [exported_sheet.cell(row, 2).value for row in range(2, 6)] == [100, 100, 100, 100]
     exported.close()
+
+
+def test_api_rate_summary_includes_zero_counts():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Invoice Value", "Taxable Value"])
+    sheet.append([105, 100])
+    stream = BytesIO()
+    workbook.save(stream)
+    response = client.post("/api/excel/process", files={"file": ("one-rate.xlsx", stream.getvalue(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, data={
+            "worksheet": "Sheet", "first_data_row": "2", "invoice_col": "1", "taxable_col": "2",
+            "invoice_header_row": "1", "taxable_header_row": "1",
+        })
+    assert response.status_code == 200, response.text
+    assert response.json()["summary"]["rate_counts"] == {"5": 1, "12": 0, "18": 0, "28": 0}
 
 
 def test_api_rejects_non_xlsx_upload():

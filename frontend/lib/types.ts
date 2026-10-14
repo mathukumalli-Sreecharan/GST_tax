@@ -52,7 +52,18 @@ export type ProcessResponse = {
   file_id: string;
   filename: string;
   worksheet: string;
-  summary: { total: number; matched: number; five_percent: number; twelve_percent: number; eighteen_percent: number; twenty_eight_percent: number; review_required: number; unmatched: number; status_counts: Record<string, number> };
+  summary: {
+    total: number;
+    matched: number;
+    five_percent?: number;
+    twelve_percent?: number;
+    eighteen_percent?: number;
+    twenty_eight_percent?: number;
+    rate_counts?: Partial<Record<"5" | "12" | "18" | "28", number>>;
+    review_required: number;
+    unmatched: number;
+    status_counts: Record<string, number>;
+  };
   rows: ResultRow[];
   verification: ResultRow[];
   rate_column: { letter: string; index: number };

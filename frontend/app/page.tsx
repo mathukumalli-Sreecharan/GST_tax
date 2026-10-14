@@ -23,6 +23,14 @@ const mappingSchema = z.object({ invoiceCol: z.number().int().positive(), taxabl
   .refine((value) => value.invoiceCol !== value.taxableCol, { message: "Invoice Value and Taxable Value must use different columns." });
 type MappingValues = z.infer<typeof mappingSchema>;
 const sizeLimit = 20 * 1024 * 1024;
+const supportedRates = [5, 12, 18, 28] as const;
+type SupportedRate = (typeof supportedRates)[number];
+
+function rateCount(summary: ProcessResponse["summary"], rate: SupportedRate): number {
+  const key = String(rate) as keyof NonNullable<ProcessResponse["summary"]["rate_counts"]>;
+  const legacyKey = ({ 5: "five_percent", 12: "twelve_percent", 18: "eighteen_percent", 28: "twenty_eight_percent" } as const)[rate];
+  return summary.rate_counts?.[key] ?? summary[legacyKey] ?? 0;
+}
 
 function Status({ status }: { status: ResultRow["status"] }) {
   return <span className={`status ${status.replaceAll(" ", "_")}`}>{status}</span>;
@@ -239,7 +247,7 @@ export default function Home() {
 
   const dashboard = () => <>
     <div className="page-head"><div><div className="eyebrow">GST LEDGER STUDIO / LOCAL SESSION</div><h1>Dashboard</h1><p className="subtext">Current processing session and review workload.</p></div><button className="btn btn-primary" onClick={() => { navigate("Process Excel"); setStage(0); setSuccess(""); }}><FileSpreadsheet size={14} />Process New Excel</button></div>
-    {result ? <><div className="metric-grid">{metric("Invoices processed", result.summary.total, "Rows with source values")}{metric("Exact GST matches", result.summary.matched, "Below ₹1 difference", "#24744c")}{metric("5% GST records", result.summary.five_percent, "Assigned rate")}{metric("12% GST records", result.summary.twelve_percent, "Assigned rate")}{metric("18% GST records", result.summary.eighteen_percent, "Assigned rate")}{metric("28% GST records", result.summary.twenty_eight_percent, "Assigned rate")}{metric("Verification required", result.summary.review_required, "Review flagged records", "#946200")}{metric("Unmatched records", result.summary.unmatched, "No rate assigned", "#9c3434")}</div>
+    {result ? <><SummaryMetrics summary={result.summary} />
       <div className="dashboard-grid"><section className="panel"><div className="panel-head"><div><h2>Recent processing summary</h2><p className="subtext" style={{ marginTop: 4 }}>Current browser session only.</p></div><span className="status MATCHED">COMPLETED</span></div><table className="summary-table"><tbody><tr><th>Workbook</th><td>{recentFile || result.filename}</td></tr><tr><th>Worksheet</th><td>{result.worksheet}</td></tr><tr><th>Invoices</th><td>{result.summary.total.toLocaleString()}</td></tr><tr><th>Verification warnings</th><td>{result.verification.length.toLocaleString()}</td></tr></tbody></table><div style={{ padding: 14 }}><button className="btn btn-small" onClick={() => navigate("Process Excel")}>View results<ChevronRight size={13} /></button></div></section>
         <section className="panel"><div className="panel-head"><h2>Review queue</h2><FileWarning size={15} color="#946200" /></div><div className="panel-body"><div style={{ fontSize: 27, fontWeight: 650 }}>{result.verification.length.toLocaleString()}</div><p className="subtext" style={{ margin: "4px 0 14px" }}>Rows requiring verification</p><button className="btn btn-small" onClick={() => navigate("Verification")}>Open verification<ArrowRight size={13} /></button></div></section></div>
     </> : <div className="empty-state" style={{ marginTop: 20 }}><FileSpreadsheet size={24} className="empty-icon" /><h2>No processing session yet</h2><p className="subtext" style={{ margin: "6px 0 15px" }}>Upload an Excel workbook to create a session summary. No historical or sample metrics are shown.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}><Upload size={14} />Process New Excel</button></div>}
@@ -280,12 +288,21 @@ export default function Home() {
 function Detail({ label, value }: { label: string; value: string }) { return <div className="detail-item"><div className="detail-label">{label}</div><div className="detail-value">{value}</div></div>; }
 function Setting({ label, value }: { label: string; value: string }) { return <div className="setting-row"><span>{label}</span><span className="setting-value">{value}</span></div>; }
 
+function SummaryMetrics({ summary }: { summary: ProcessResponse["summary"] }) {
+  return <div className="metric-grid">
+    {metric("Invoices processed", summary.total, "Rows with source values")}
+    {metric("Exact GST matches", summary.matched, "Below ₹1 difference", "#24744c")}
+    {supportedRates.map((rate) => metric(`${rate}% GST records`, rateCount(summary, rate), "Assigned rate"))}
+    {metric("Verification required", summary.review_required, "Review flagged records", "#946200")}
+    {metric("Unmatched records", summary.unmatched, "No rate assigned", "#9c3434")}
+  </div>;
+}
 function ResultsView({ result, columns, onDownload, onReport, onRowClick, onNew }: {
   result: ProcessResponse; columns: ColumnDef<ResultRow, unknown>[]; onDownload: () => void;
   onReport: () => void; onRowClick: (row: ResultRow) => void; onNew: () => void;
 }) {
   const summary = result.summary;
-  return <><div className="metric-grid">{metric("Invoices processed", summary.total, "Rows with source values")}{metric("Exact GST matches", summary.matched, "Below ₹1 difference", "#24744c")}{metric("5% GST records", summary.five_percent, "Assigned rate")}{metric("12% GST records", summary.twelve_percent, "Assigned rate")}{metric("18% GST records", summary.eighteen_percent, "Assigned rate")}{metric("28% GST records", summary.twenty_eight_percent, "Assigned rate")}{metric("Verification required", summary.review_required, "Review flagged records", "#946200")}{metric("Unmatched records", summary.unmatched, "No rate assigned", "#9c3434")}</div>
+  return <><SummaryMetrics summary={summary} />
     <section className="panel"><div className="panel-head"><div><h2>Processed rows</h2><p className="subtext" style={{ marginTop: 4 }}>{result.filename} · {result.worksheet}</p></div><div className="result-actions"><button className="btn btn-small" onClick={onNew}><Upload size={13} />Process another</button><button className="btn btn-small" onClick={onReport}><ArrowDownToLine size={13} />Verification report</button><button className="btn btn-small btn-primary" onClick={onDownload}><ArrowDownToLine size={13} />Updated Excel</button></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.rows} columns={columns} statusFilter onRowClick={onRowClick} emptyText="No invoice rows found." /></div></section>
   </>;
 }
