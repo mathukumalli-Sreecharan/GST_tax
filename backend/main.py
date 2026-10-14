@@ -1,0 +1,294 @@
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+import time
+import uuid
+import warnings
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+
+from excel_processor import PreservationError, detect_columns, detect_rate_column, process_workbook
+from gst_calculator import calculate_rate, as_decimal
+from verification import report_csv
+
+ROOT = Path(__file__).resolve().parents[1]
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+RESULT_TTL_SECONDS = 60 * 60
+RESULTS: dict[str, dict[str, Any]] = {}
+STORAGE = Path(tempfile.gettempdir()) / "gst-ledger-studio"
+STORAGE.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="GST Ledger Studio API", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
+
+def safe_name(name: str) -> str:
+    clean = Path(name or "workbook.xlsx").name
+    clean = re.sub(r"[^A-Za-z0-9._ -]", "_", clean)
+    return clean if clean.lower().endswith(".xlsx") else f"{Path(clean).stem}.xlsx"
+
+
+def purge_expired_results() -> None:
+    cutoff = time.time() - RESULT_TTL_SECONDS
+    for file_id, entry in list(RESULTS.items()):
+        if entry["created"] < cutoff:
+            entry["output"].unlink(missing_ok=True)
+            entry["report"].unlink(missing_ok=True)
+            RESULTS.pop(file_id, None)
+    for path in STORAGE.glob("inspect_*"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+async def read_upload(upload: UploadFile) -> tuple[str, bytes]:
+    incoming = Path(upload.filename or "workbook.xlsx").name
+    if Path(incoming).suffix.lower() != ".xlsx":
+        raise HTTPException(400, "Only .xlsx workbooks are supported.")
+    name = safe_name(incoming)
+    content = await upload.read(MAX_UPLOAD_BYTES + 1)
+    if not content:
+        raise HTTPException(400, "The uploaded workbook is empty.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Workbook exceeds the 20 MB upload limit.")
+    return name, content
+
+
+def write_temp(name: str, data: bytes) -> Path:
+    handle, path = tempfile.mkstemp(prefix="inspect_", suffix="_" + safe_name(name), dir=STORAGE)
+    os.close(handle)
+    result = Path(path)
+    result.write_bytes(data)
+    return result
+
+
+def _column_metadata(ws, detected, rate):
+    labels: dict[int, str] = {}
+    header_row = detected["invoice_header_row"] if detected else 1
+    for col in range(1, ws.max_column + 1):
+        value = ws.cell(header_row, col).value
+        if value is None and detected:
+            value = ws.cell(detected["taxable_header_row"], col).value
+        labels[col] = str(value).strip() if value is not None and str(value).strip() else f"Column {get_column_letter(col)}"
+    invoice_number = None
+    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 40)):
+        for cell in row:
+            normalized = re.sub(r"[^a-z0-9]+", " ", str(cell.value or "").lower()).strip()
+            if "invoice" in normalized and "number" in normalized:
+                invoice_number = {"column": cell.column, "header_row": cell.row}
+                break
+        if invoice_number:
+            break
+    return [{"index": col, "letter": get_column_letter(col), "header": labels[col],
+             "is_invoice_value": bool(detected and col == detected["invoice_col"]),
+             "is_taxable_value": bool(detected and col == detected["taxable_col"]),
+             "is_rate": bool(rate and col == rate[0]),
+             "is_invoice_number": bool(invoice_number and col == invoice_number["column"])}
+            for col in range(1, ws.max_column + 1)], invoice_number
+
+
+def _inspect_sheet(ws):
+    detected = detect_columns(ws)
+    rate = detect_rate_column(ws)
+    columns, invoice_number = _column_metadata(ws, detected, rate)
+    preview = []
+    for row_index, row in enumerate(ws.iter_rows(min_row=1, max_row=min(ws.max_row, 24), values_only=True), 1):
+        preview.append({"excel_row": row_index, "values": [cell for cell in row]})
+    return {"name": ws.title, "max_row": ws.max_row, "max_column": ws.max_column,
+            "detected": detected, "existing_rate": ({"column": rate[0], "header_row": rate[1]} if rate else None),
+            "invoice_number": invoice_number, "columns": columns, "preview": preview}
+
+
+def _safe_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, PreservationError):
+        return HTTPException(422, str(exc))
+    if isinstance(exc, (ValueError, OSError)):
+        return HTTPException(400, str(exc))
+    return HTTPException(400, f"Workbook could not be processed: {exc}")
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/api/excel/inspect")
+async def inspect_excel(file: UploadFile = File(...)):
+    purge_expired_results()
+    name, content = await read_upload(file)
+    temp = write_temp(name, content)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            workbook = load_workbook(temp, read_only=False, data_only=False, keep_links=True)
+        try:
+            if caught:
+                raise HTTPException(422, "OpenPyXL reported workbook content it cannot safely preserve: " + "; ".join(str(w.message) for w in caught))
+            sheets = [_inspect_sheet(ws) for ws in workbook.worksheets]
+            return {"filename": name, "size_bytes": len(content), "sheets": sheets,
+                    "max_upload_bytes": MAX_UPLOAD_BYTES}
+        finally:
+            workbook.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _safe_error(exc) from exc
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+@app.post("/api/excel/process")
+async def process_excel(
+    file: UploadFile = File(...),
+    worksheet: str = Form(...),
+    first_data_row: int = Form(..., ge=2),
+    invoice_col: int = Form(..., ge=1),
+    taxable_col: int = Form(..., ge=1),
+    invoice_number_col: int | None = Form(None, ge=1),
+    invoice_header_row: int | None = Form(None, ge=1),
+    taxable_header_row: int | None = Form(None, ge=1),
+    recalculate_existing: bool = Form(False),
+    confirm_overwrite: bool = Form(False),
+):
+    purge_expired_results()
+    if invoice_col == taxable_col:
+        raise HTTPException(400, "Invoice Value and Taxable Value must use different columns.")
+    if recalculate_existing and not confirm_overwrite:
+        raise HTTPException(400, "Confirm overwrite before recalculating an existing Rate(%) column.")
+    name, content = await read_upload(file)
+    source = write_temp(name, content)
+    output = STORAGE / f"{uuid.uuid4().hex}_{'updated_' + name}"
+    try:
+        workbook = load_workbook(source, read_only=False, data_only=False, keep_links=True)
+        try:
+            if worksheet not in workbook.sheetnames:
+                raise HTTPException(400, "Selected worksheet does not exist in this workbook.")
+            ws = workbook[worksheet]
+            existing = detect_rate_column(ws)
+            if existing and recalculate_existing and not confirm_overwrite:
+                raise HTTPException(400, "Confirm overwrite before recalculating an existing Rate(%) column.")
+            if existing and existing[0] == invoice_col or existing and existing[0] == taxable_col:
+                raise HTTPException(400, "The existing Rate(%) column cannot also be an input value column.")
+            inv_header = invoice_header_row or max(1, first_data_row - 1)
+            tax_header = taxable_header_row or max(1, first_data_row - 1)
+            result = process_workbook(source, output, worksheet, invoice_col, taxable_col,
+                                      first_data_row - 1, inv_header, tax_header,
+                                      existing[0] if existing else None,
+                                      bool(existing and recalculate_existing and confirm_overwrite))
+            # Read source values and produce a typed row result table from the same calculation engine.
+            original = load_workbook(source, read_only=True, data_only=False, keep_links=True)
+            original_ws = original[worksheet]
+            rate_col = existing[0] if existing else taxable_col + 1
+            rows = []
+            matches = 0
+            for row_index in range(first_data_row, original_ws.max_row + 1):
+                invoice_raw = original_ws.cell(row_index, invoice_col).value
+                taxable_raw = original_ws.cell(row_index, taxable_col).value
+                number = original_ws.cell(row_index, invoice_number_col).value if invoice_number_col else None
+                # Ignore fully blank formatted rows in the UI; they remain untouched in the workbook.
+                if invoice_raw is None and taxable_raw is None and number is None:
+                    continue
+                calc = calculate_rate(invoice_raw, taxable_raw)
+                inv = as_decimal(invoice_raw)
+                expected5 = inv * 100 / 105 if inv is not None else None
+                expected18 = inv * 100 / 118 if inv is not None else None
+                diff5 = abs(as_decimal(taxable_raw) - expected5) if as_decimal(taxable_raw) is not None and expected5 is not None else None
+                diff18 = abs(as_decimal(taxable_raw) - expected18) if as_decimal(taxable_raw) is not None and expected18 is not None else None
+                status = ("AMBIGUOUS" if "ambiguous" in calc.message.lower() else
+                          "INVALID" if calc.rate is None and (inv is None or as_decimal(taxable_raw) is None or inv <= 0 or as_decimal(taxable_raw) <= 0 or inv < as_decimal(taxable_raw)) else
+                          "UNMATCHED" if calc.rate is None else "REVIEW REQUIRED" if calc.flagged else "MATCHED")
+                rows.append({"excel_row": row_index, "invoice_number": str(number) if number is not None else "",
+                             "invoice_value": str(invoice_raw) if invoice_raw is not None else "",
+                             "taxable_value": str(taxable_raw) if taxable_raw is not None else "",
+                             "rate": calc.rate, "difference": str(calc.difference) if calc.difference is not None else "",
+                             "difference_5": str(diff5) if diff5 is not None else "",
+                             "difference_18": str(diff18) if diff18 is not None else "",
+                             "expected_5": str(expected5) if expected5 is not None else "",
+                             "expected_18": str(expected18) if expected18 is not None else "",
+                             "status": status, "reason": calc.message,
+                             "invoice_column": invoice_col, "invoice_letter": get_column_letter(invoice_col),
+                             "invoice_header": str(original_ws.cell(inv_header, invoice_col).value or f"Column {get_column_letter(invoice_col)}"),
+                             "taxable_column": taxable_col, "taxable_letter": get_column_letter(taxable_col),
+                             "taxable_header": str(original_ws.cell(tax_header, taxable_col).value or f"Column {get_column_letter(taxable_col)}"),
+                             "rate_column": rate_col, "rate_letter": get_column_letter(rate_col)})
+                if status == "MATCHED":
+                    matches += 1
+            original.close()
+        finally:
+            workbook.close()
+        status_counts = {status: sum(1 for row in rows if row["status"] == status)
+                         for status in ("MATCHED", "REVIEW REQUIRED", "UNMATCHED", "INVALID", "AMBIGUOUS")}
+        summary = {"total": len(rows), "matched": matches,
+                   "five_percent": sum(1 for row in rows if row["rate"] == 5),
+                   "eighteen_percent": sum(1 for row in rows if row["rate"] == 18),
+                   "review_required": status_counts["REVIEW REQUIRED"] + status_counts["INVALID"] + status_counts["AMBIGUOUS"],
+                   "unmatched": status_counts["UNMATCHED"], "status_counts": status_counts}
+        flagged_rows = [row for row in rows if row["status"] != "MATCHED"]
+        report_data = []
+        for row in flagged_rows:
+            report_data.append({"row": row["excel_row"], "invoice_letter": row["invoice_letter"],
+                                "invoice_col": row["invoice_column"], "invoice_header": row["invoice_header"],
+                                "taxable_letter": row["taxable_letter"], "taxable_col": row["taxable_column"],
+                                "taxable_header": row["taxable_header"], "rate_letter": row["rate_letter"],
+                                "rate_col": row["rate_column"], "difference": row["difference"],
+                                "rate": row["rate"], "message": row["reason"]})
+        report_path = STORAGE / f"{uuid.uuid4().hex}_report.csv"
+        report_path.write_text(report_csv(report_data), encoding="utf-8")
+        if not output.exists():
+            raise HTTPException(500, "Workbook processor did not produce an output file.")
+        file_id = uuid.uuid4().hex
+        RESULTS[file_id] = {"output": output, "report": report_path, "filename": "updated_" + name,
+                            "created": time.time(), "summary": summary, "rows": rows,
+                            "worksheet": worksheet, "source_filename": name}
+        return {"file_id": file_id, "filename": "updated_" + name, "worksheet": worksheet,
+                "summary": summary, "rows": rows, "verification": flagged_rows,
+                "rate_column": {"letter": get_column_letter(rate_col), "index": rate_col}}
+    except HTTPException:
+        output.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        output.unlink(missing_ok=True)
+        raise _safe_error(exc) from exc
+    finally:
+        source.unlink(missing_ok=True)
+
+
+def _get_result(file_id: str):
+    entry = RESULTS.get(file_id)
+    if not entry or time.time() - entry["created"] > RESULT_TTL_SECONDS:
+        if entry:
+            entry["output"].unlink(missing_ok=True)
+            entry["report"].unlink(missing_ok=True)
+            RESULTS.pop(file_id, None)
+        raise HTTPException(404, "This download is no longer available. Process the workbook again.")
+    return entry
+
+
+@app.get("/api/excel/download/{file_id}")
+def download_excel(file_id: str):
+    entry = _get_result(file_id)
+    return FileResponse(entry["output"], filename=entry["filename"],
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/excel/report/{file_id}")
+def download_report(file_id: str):
+    entry = _get_result(file_id)
+    return FileResponse(entry["report"], filename=f"verification_{Path(entry['source_filename']).stem}.csv",
+                        media_type="text/csv; charset=utf-8")
