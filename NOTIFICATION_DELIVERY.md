@@ -29,3 +29,25 @@ Leases, fencing tokens, exponential backoff, eight-attempt cap and the 23-hour r
 The supplied five-minute maintenance cron drains up to 50 messages per run independently of web sleep. Scheduling/startup delays, cleanup work, provider outages and retry backoff can extend that interval. Render cron is a separate paid service; this repository does not provision it automatically. An always-running service or enabled independent scheduler is required for delivery independent of user traffic. No new public send-email endpoint or keep-alive traffic was added.
 
 `sent` means accepted by Resend, not guaranteed Gmail inbox placement. Tests use HTTP doubles and embedded PostgreSQL; no live email or production mutation was performed. The existing Render Blueprint specifies paid Starter services; this release does not change hosting plans.
+
+## Render HTTP 403 investigation
+
+The successful manual text, HTML and idempotency tests and verified stored payload make message format and recipient restrictions weaker explanations for the current incident. The leading hypothesis is edge rejection of Python urllib's default `Python-urllib/<version>` client signature. No matching Resend API log is consistent with an edge block, but is not conclusive: a different API key/account, Render egress restrictions or an intermediary can also explain it. Historical response bodies and the actual PowerShell command were not available for comparison.
+
+The minimal request change explicitly sets `User-Agent: GST-Ledger-Studio/1.0` and `Accept: application/json`. Method, URL, Bearer authentication, JSON payload bytes and idempotency key remain unchanged. Compared with the reported successful PowerShell request, the application already uses POST, JSON and Bearer authorization; client headers and execution environment are the principal known differences. Text versus HTML and the idempotency header are already ruled out by the manual tests. See [urllib documentation](https://docs.python.org/3/library/urllib.request.html) and [Cloudflare error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/).
+
+### Temporary safe diagnostics
+
+Set `RESEND_DIAGNOSTICS=1` manually on both the Render API and maintenance cron while investigating. Diagnostics are disabled by default. The existing Blueprint points both services at the `gst-ledger-beta` environment group, but this does not prove the live services use that group or lack service-specific overrides. The API reads process environment; the CLI/maintenance loads `.env` with dotenv's default behavior, which does not override already set environment variables. Check both services separately for stale keys and stale deployed revisions.
+
+On HTTP failures, opt-in logs contain status, an allowlisted provider code and a canonical sanitized message, plus recognized content type/server, validated Cloudflare ray ID and numeric retry delay. Unknown bodies/messages are withheld. No raw response, arbitrary header, request body, applicant identity, Authorization header, lease token or idempotency header is logged. The existing outbox `last_error` stores a short sanitized status/code/summary, even when temporary logging is disabled. JSON validation, restricted-key and test-recipient failures are distinguished from non-JSON edge error 1010. A Cloudflare server header alone does not establish an edge rejection; inspect the code as well. Unknown messages are deliberately summarized rather than copied because they can echo private data.
+
+Run this read-only command locally and in each Render service environment:
+
+```text
+python -m backend.notifications --check-config
+```
+
+It performs no database RPC or email request. Compare the 12-character SHA-256 `key_fingerprint` values; a mismatch proves different effective keys. Matching values provide a practical comparison, not a proof of key permissions/account ownership. For a full comparison, set `RESEND_EXPECTED_KEY_SHA256` to the full SHA-256 digest of the known-working trimmed key, then rerun: `expected_key_matches` must be true. Never put the actual key in this digest variable. No expected digest yields null, not a successful match. `key_present`, `key_format_valid` and `key_whitespace_trimmed` flag missing/malformed configuration without printing the key. The local check confirms presence and plausible format; remote configuration cannot be confirmed from this workspace.
+
+After manual deployment, observe only normal eligible retries or a deliberately authorized new signup. Do not reset attempts, alter frozen payloads or replay old records to collect diagnostics. The updated code keeps all existing outbox/lease/idempotency handling. Disable `RESEND_DIAGNOSTICS` after diagnosis. If 1010 persists with the explicit application User-Agent, use the safe ray ID/status to investigate with the provider; do not assume recipient restrictions from status 403 alone. No production access, email send, push or deployment was performed for this investigation.
