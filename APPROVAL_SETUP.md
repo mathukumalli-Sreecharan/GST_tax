@@ -15,14 +15,14 @@ SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 SUPABASE_PUBLISHABLE_KEY=YOUR-PUBLISHABLE-KEY
 SUPABASE_SERVICE_ROLE_KEY=YOUR-SERVER-ONLY-SERVICE-ROLE-OR-SECRET-KEY
 ADMIN_USER_ID=YOUR-VERIFIED-AUTH-USER-UUID
-ADMIN_NOTIFICATION_EMAIL=you@example.com
+ADMIN_NOTIFICATION_EMAIL=mathukumalli.sreecharan@gmail.com
 RESEND_API_KEY=YOUR-RESEND-KEY
-EMAIL_FROM=GST Ledger Studio <access@your-verified-domain.example>
+EMAIL_FROM=GST Ledger Studio <onboarding@resend.dev>
 APP_BASE_URL=http://localhost:3000
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
-Use a sender/domain verified in Resend. `APP_BASE_URL` must be the frontend origin, without a path. Use your HTTPS production origin for deployment. The application accepts a legacy Supabase service-role JWT or a newer backend secret key in `SUPABASE_SERVICE_ROLE_KEY`. These credentials are backend-only. Local `.env` files are ignored by Git.
+Use the test sender only for administrator requests to the Resend-authorized Gmail. Applicant decision emails are disabled. `APP_BASE_URL` must be the frontend origin, without a path. Use your HTTPS production origin for deployment. The application accepts a legacy Supabase service-role JWT or a newer backend secret key in `SUPABASE_SERVICE_ROLE_KEY`. These credentials are backend-only. Local `.env` files are ignored by Git.
 
 The existing `frontend/.env.local` needs only the publishable frontend settings shown in `frontend/.env.example`. Optionally set server-only `API_INTERNAL_BASE` there if Next.js reaches FastAPI through a different internal address. Never add backend secrets to the frontend configuration.
 
@@ -62,7 +62,7 @@ Regular users can sign in and see pending, rejected or revoked access screens. P
 
 An Auth database trigger inserts a pending approval at signup. Email confirmation queues one administrator notification with a unique request event key. Both are stored independently of the email provider. Names are display-only, email addresses come from verified Auth records, and plain-text notification links open the admin review screen. There are no permission-changing email links.
 
-Each admin decision locks the applicant row, checks the expected previous status, updates the approval, appends the actor/time audit record and queues the applicant email in one transaction. A stale admin screen receives HTTP 409 and must refresh.
+Each admin decision locks the applicant row, checks the expected previous status, updates the approval, appends the actor/time audit record and retains a decision outbox event in one transaction; decision events are excluded from email delivery. A stale admin screen receives HTTP 409 and must refresh.
 
 The FastAPI lifespan worker drains the outbox every 30 seconds. Missing email configuration does not consume requests. Alternatively, with backend environment configured, a scheduler may run:
 
@@ -89,6 +89,8 @@ npm.cmd run build
 
 Frontend tests include actual PostgreSQL execution through the test-only PGlite dependency, with Supabase Auth roles/schema emulated. They exercise migration triggers, signup/verification, existing-user defaults, RLS, owner setup, decisions, stale updates, auditing, outbox leases, retry payloads and deduplication-window safeguards. Python tests cover JWT enforcement, all four Excel endpoints, approval states, owner-only APIs, cross-user downloads, revocation, email delivery/failure and existing GST regressions.
 
-Before production rollout, verify a real email-confirmation signup, an owner notification in Resend, approval/rejection applicant emails and revocation with two separate browser accounts. Automated tests use provider doubles and embedded PostgreSQL; they do not provision a live Supabase project or send real emails.
+Before production rollout, verify a real email-confirmation signup, an owner notification in Resend, absence of applicant decision emails and revocation with two separate browser accounts. Automated tests use provider doubles and embedded PostgreSQL; they do not provision a live Supabase project or send real emails.
 
 References: [Supabase database function security](https://supabase.com/docs/guides/database/functions), [Supabase RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), [Resend idempotency keys](https://resend.com/docs/dashboard/emails/idempotency-keys).
+
+Apply only unapplied migrations through `005_admin_request_notifications.sql` before starting the updated worker. Do not rerun bootstrap for the approved administrator. See [NOTIFICATION_DELIVERY.md](NOTIFICATION_DELIVERY.md) for release steps, recovery and Render Free timing.

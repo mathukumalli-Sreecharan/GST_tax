@@ -31,4 +31,4 @@ The skipped test requires optional original/reference accounting workbook fixtur
 
 ## Owner action before inviting auditors
 
-Apply only migrations 003 and 004 to the already configured project; preserve the existing owner setup. Configure the Vercel and Render environments, private bucket and independent cron job using `BETA_DEPLOYMENT.md`. Rotate previously exposed privileged credentials manually, use a verified Resend domain for applicant notifications, and perform the two-account/live-email deployment acceptance steps there. Rotation and live deployment have not been verified here.
+Apply only unapplied migrations through 005 to the already configured project; preserve the existing owner setup. Configure the Vercel and Render environments, private bucket and independent cron job using `BETA_DEPLOYMENT.md`. Rotate previously exposed privileged credentials manually, use the test sender for administrator request notifications only, and perform the two-account/live-email deployment acceptance steps there. Rotation and live deployment have not been verified here.

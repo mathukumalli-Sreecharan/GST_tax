@@ -137,14 +137,14 @@ def test_owner_actions_use_verified_actor_and_validate_input(access, status, pri
 @pytest.fixture
 def email_config(monkeypatch):
     for key, value in {'RESEND_API_KEY':'test-server-secret','EMAIL_FROM':'Access <access@example.com>',
-                       'ADMIN_NOTIFICATION_EMAIL':'owner@example.com','APP_BASE_URL':'https://gst.example.com'}.items():
+                       'ADMIN_NOTIFICATION_EMAIL':'owner@gmail.com','APP_BASE_URL':'https://gst.example.com'}.items():
         monkeypatch.setenv(key,value)
 
 
 @pytest.mark.parametrize('fails', [False, True])
 def test_email_delivery_and_failure_retains_outbox(email_config, fails):
-    item = {'id':str(uuid4()),'lease_token':str(uuid4()),'payload':{
-        'from':'access@example.com','to':['owner@example.com'],'subject':'Request','text':'Verified applicant'}}
+    item = {'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
+        'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request','text':'Verified applicant'}}
     with patch('backend.notifications.rpc', side_effect=[item,None,None]) as database, patch('backend.notifications.urlopen') as provider:
         if fails:
             provider.side_effect = URLError('timeout')
@@ -169,7 +169,7 @@ def test_unconfigured_email_never_consumes_requests(monkeypatch):
 
 
 def test_retry_uses_identical_payload_and_key(email_config):
-    item = {'id':str(uuid4()),'lease_token':str(uuid4()),'payload':{'text':'Frozen message','to':['owner@example.com']}}
+    item = {'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{'from':'Access <access@example.com>','subject':'Request','text':'Frozen message','to':['owner@gmail.com']}}
     with patch('backend.notifications.rpc',side_effect=[item,None,item,None]), patch('backend.notifications.urlopen') as provider:
         provider.side_effect=URLError('response lost')
         deliver_notifications(limit=1)
@@ -199,12 +199,57 @@ def test_setup_errors_are_specific_without_exposing_credentials(monkeypatch, sta
     assert 'sensitive database details' not in exc.value.detail
 
 
-def test_testing_sender_restriction_records_warning_without_losing_notification(email_config,monkeypatch):
-    monkeypatch.setenv('EMAIL_FROM','GST Ledger Studio <onboarding@resend.dev>')
-    item={'id':str(uuid4()),'lease_token':str(uuid4()),'payload':{'to':['applicant@example.com'],'text':'Approved'}}
-    failure=HTTPError('https://api.resend.com/emails',403,'Forbidden',{},BytesIO(b'provider details'))
+def test_testing_sender_403_records_actionable_diagnostic(email_config,monkeypatch):
+    sender='GST Ledger Studio <onboarding@resend.dev>'
+    monkeypatch.setenv('EMAIL_FROM',sender)
+    item={'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
+        'from':sender,'to':['owner@gmail.com'],'subject':'Request','text':'Applicant'}}
+    failure=HTTPError('https://api.resend.com/emails',403,'Forbidden',{},BytesIO(b'sensitive provider details'))
     with patch('backend.notifications.rpc',side_effect=[item,None]) as db,patch('backend.notifications.urlopen',side_effect=failure):
         assert deliver_notifications(limit=1)==0
         details=db.call_args.args[1]
-        assert 'verified sending domain' in details['p_error']
+        assert 'Resend account owner Gmail' in details['p_error']
+        assert 'sensitive' not in details['p_error']
         assert details['p_provider_id'] is None
+
+@pytest.mark.parametrize('change', [
+    {'kind':'approved'}, {'kind':'rejected'}, {'kind':'revoked'},
+    {'to':['applicant@example.com']}, {'bcc':['applicant@example.com']},
+    {'from':'old@example.com'},
+])
+def test_non_admin_or_decision_payload_is_never_sent(email_config, change):
+    item={'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
+        'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request','text':'Applicant'}}
+    if 'kind' in change:
+        item.update(change)
+    else:
+        item['payload'].update(change)
+    with patch('backend.notifications.rpc',side_effect=[item,None]) as db, patch('backend.notifications.urlopen') as provider:
+        assert deliver_notifications(limit=1)==0
+        provider.assert_not_called()
+        assert 'blocked' in db.call_args.args[1]['p_error']
+
+
+def test_failed_delivery_recovers_with_original_idempotency_key(email_config):
+    item={'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
+        'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request','text':'Applicant'}}
+    with patch('backend.notifications.rpc',side_effect=[item,None,item,None,None]) as db, patch('backend.notifications.urlopen') as provider:
+        provider.side_effect=URLError('timeout')
+        assert deliver_notifications(limit=1)==0
+        assert db.call_args.args[1]['p_error']
+        provider.side_effect=None
+        provider.return_value.__enter__.return_value.read.return_value=b'{"id":"accepted"}'
+        assert deliver_notifications(limit=1)==1
+        assert db.call_args.args[1]['p_provider_id']=='accepted'
+        assert deliver_notifications(limit=1)==0
+        first,second=[c.args[0] for c in provider.call_args_list]
+        assert first.data==second.data
+        assert first.get_header('Idempotency-key')==second.get_header('Idempotency-key')
+
+
+@pytest.mark.parametrize('recipient',['other@example.com','owner@gmail.com,other@gmail.com','Owner <owner@gmail.com>'])
+def test_invalid_admin_configuration_does_not_claim(email_config,monkeypatch,recipient):
+    monkeypatch.setenv('ADMIN_NOTIFICATION_EMAIL',recipient)
+    with patch('backend.notifications.rpc') as db:
+        assert deliver_notifications()==0
+        db.assert_not_called()

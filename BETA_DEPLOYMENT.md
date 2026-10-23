@@ -70,9 +70,9 @@ Create an environment group named **`gst-ledger-beta`** in Render with the follo
 | `SUPABASE_PUBLISHABLE_KEY` | Same project's publishable key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Rotated server-only service-role JWT or newer secret key |
 | `ADMIN_USER_ID` | Your existing designated, verified Auth UUID; do not replace during rollout |
-| `ADMIN_NOTIFICATION_EMAIL` | Owner's notification mailbox |
+| `ADMIN_NOTIFICATION_EMAIL` | `mathukumalli.sreecharan@gmail.com` (Resend-authorized Gmail) |
 | `RESEND_API_KEY` | Rotated backend-only Resend key |
-| `EMAIL_FROM` | `GST Ledger Studio <access@YOUR-VERIFIED-DOMAIN>` for applicant delivery |
+| `EMAIL_FROM` | `GST Ledger Studio <onboarding@resend.dev>` for administrator requests only |
 | `APP_BASE_URL` | Exact HTTPS Vercel/custom-domain frontend origin |
 | `CORS_ORIGINS` | Exact HTTPS frontend origin(s), comma-separated; no wildcard |
 
@@ -122,7 +122,9 @@ Upload limits: 20 MB uploaded workbook, 21 MB multipart request including overhe
 
 ## Resend operation
 
-For development, `GST Ledger Studio <onboarding@resend.dev>` is supported. The testing sender can be restricted by Resend to authorized test recipients. A failed applicant email never rolls back approval. The outbox records a delivery warning and retries; do not interpret a queued notification as sent. Production applicant delivery needs a verified sending domain.
+Apply unapplied migrations through `005_admin_request_notifications.sql`. This release delivers administrator requests only and retains decision events without emailing applicants. See [NOTIFICATION_DELIVERY.md](NOTIFICATION_DELIVERY.md) for deployment and recovery.
+
+Use `GST Ledger Studio <onboarding@resend.dev>` with the authorized administrator Gmail. Applicant decision events are retained without delivery. Eligible requests retry; queued does not mean sent.
 
 `sent`/“accepted” means the provider accepted the message, not confirmed mailbox delivery. Provider delivery/bounce verification is done in Resend. Existing frozen retry payloads are not rewritten during migration, preserving idempotency. New request messages include the applicant's verified email, name, registration time in UTC and review link. There are no permission-changing email links.
 
@@ -148,7 +150,7 @@ Then use two real browser accounts against the deployed environment:
 6. Download and verify formatting/rates. Another approved account cannot download/delete it.
 7. Revoke the auditor and confirm existing workbook/report/history download requests are denied.
 8. Delete a file, check it disappears from metadata and Storage, and verify the scheduled cron handles expiration and failed deletions.
-9. Check applicant email acceptance/failures in Resend and the outbox. Never claim delivery based only on an approval response.
+9. Check administrator request acceptance/failures in Resend and the outbox, and confirm decisions send no applicant email. Never claim delivery based only on an approval response.
 10. Confirm mobile navigation/tables and error/loading screens remain usable.
 
 No live Vercel/Render deployment or real mailbox delivery has been verified from this workspace. Follow these manual steps before inviting auditors.
