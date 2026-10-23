@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import asyncio
+from contextlib import asynccontextmanager
 import re
 import tempfile
 import time
@@ -12,21 +14,45 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi import Depends
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from excel_processor import PreservationError, detect_columns, detect_rate_column, process_workbook
+from excel_processor import (PreservationError, detect_columns, detect_rate_column,
+                             process_workbook, inspect_source, protection_metadata)
 from gst_calculator import SUPPORTED_RATES, calculate_rate, as_decimal
+from backend.auth import require_authenticated_user
 from verification import report_csv
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 RESULT_TTL_SECONDS = 60 * 60
 RESULTS: dict[str, dict[str, Any]] = {}
-STORAGE = Path(tempfile.gettempdir()) / "gst-ledger-studio"
-STORAGE.mkdir(parents=True, exist_ok=True)
+# Private process directory; results are intentionally ephemeral and single-worker.
+_STORAGE_HANDLE = tempfile.TemporaryDirectory(prefix="gst-ledger-studio-")
+STORAGE = Path(_STORAGE_HANDLE.name)
 
-app = FastAPI(title="GST Ledger Studio API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app):
+    async def cleanup():
+        while True:
+            await asyncio.sleep(60)
+            purge_expired_results()
+    task = asyncio.create_task(cleanup())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        for entry in list(RESULTS.values()):
+            entry["output"].unlink(missing_ok=True)
+            entry["report"].unlink(missing_ok=True)
+        RESULTS.clear()
+
+app = FastAPI(title="GST Ledger Studio API", version="1.0.0", lifespan=lifespan)
 
 
 def configured_cors_origins(value: str | None = None) -> list[str]:
@@ -42,7 +68,7 @@ app.add_middleware(
     allow_origins=configured_cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization", "apikey"],
 )
 
 
@@ -130,7 +156,7 @@ def _safe_error(exc: Exception) -> HTTPException:
         return HTTPException(422, str(exc))
     if isinstance(exc, (ValueError, OSError)):
         return HTTPException(400, str(exc))
-    return HTTPException(400, f"Workbook could not be processed: {exc}")
+    return HTTPException(400, "Workbook could not be processed. Check its format and selected columns.")
 
 
 @app.get("/api/health")
@@ -139,11 +165,12 @@ def health():
 
 
 @app.post("/api/excel/inspect")
-async def inspect_excel(file: UploadFile = File(...)):
+async def inspect_excel(file: UploadFile = File(...), user_id: str = Depends(require_authenticated_user)):
     purge_expired_results()
     name, content = await read_upload(file)
     temp = write_temp(name, content)
     try:
+        _, source_info = inspect_source(content)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             workbook = load_workbook(temp, read_only=False, data_only=False, keep_links=True)
@@ -152,6 +179,7 @@ async def inspect_excel(file: UploadFile = File(...)):
                 raise HTTPException(422, "OpenPyXL reported workbook content it cannot safely preserve: " + "; ".join(str(w.message) for w in caught))
             sheets = [_inspect_sheet(ws) for ws in workbook.worksheets]
             return {"filename": name, "size_bytes": len(content), "sheets": sheets,
+                    "source_info": source_info, "protection": protection_metadata(workbook),
                     "max_upload_bytes": MAX_UPLOAD_BYTES}
         finally:
             workbook.close()
@@ -175,6 +203,7 @@ async def process_excel(
     taxable_header_row: int | None = Form(None, ge=1),
     recalculate_existing: bool = Form(False),
     confirm_overwrite: bool = Form(False),
+    user_id: str = Depends(require_authenticated_user),
 ):
     purge_expired_results()
     if invoice_col == taxable_col:
@@ -185,6 +214,7 @@ async def process_excel(
     source = write_temp(name, content)
     output = STORAGE / f"{uuid.uuid4().hex}_{'updated_' + name}"
     try:
+        inspect_source(content)
         workbook = load_workbook(source, read_only=False, data_only=False, keep_links=True)
         try:
             if worksheet not in workbook.sheetnames:
@@ -272,7 +302,7 @@ async def process_excel(
         file_id = uuid.uuid4().hex
         RESULTS[file_id] = {"output": output, "report": report_path, "filename": "updated_" + name,
                             "created": time.time(), "summary": summary, "rows": rows,
-                            "worksheet": worksheet, "source_filename": name}
+                            "worksheet": worksheet, "source_filename": name, "owner_id": user_id}
         return {"file_id": file_id, "filename": "updated_" + name, "worksheet": worksheet,
                 "summary": summary, "rows": rows, "verification": flagged_rows,
                 "rate_column": {"letter": get_column_letter(rate_col), "index": rate_col}}
@@ -286,7 +316,7 @@ async def process_excel(
         source.unlink(missing_ok=True)
 
 
-def _get_result(file_id: str):
+def _get_result(file_id: str, user_id: str):
     entry = RESULTS.get(file_id)
     if not entry or time.time() - entry["created"] > RESULT_TTL_SECONDS:
         if entry:
@@ -294,18 +324,20 @@ def _get_result(file_id: str):
             entry["report"].unlink(missing_ok=True)
             RESULTS.pop(file_id, None)
         raise HTTPException(404, "This download is no longer available. Process the workbook again.")
+    if entry.get("owner_id") != user_id:
+        raise HTTPException(404, "This download is not available.")
     return entry
 
 
 @app.get("/api/excel/download/{file_id}")
-def download_excel(file_id: str):
-    entry = _get_result(file_id)
+def download_excel(file_id: str, user_id: str = Depends(require_authenticated_user)):
+    entry = _get_result(file_id, user_id)
     return FileResponse(entry["output"], filename=entry["filename"],
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/excel/report/{file_id}")
-def download_report(file_id: str):
-    entry = _get_result(file_id)
+def download_report(file_id: str, user_id: str = Depends(require_authenticated_user)):
+    entry = _get_result(file_id, user_id)
     return FileResponse(entry["report"], filename=f"verification_{Path(entry['source_filename']).stem}.csv",
                         media_type="text/csv; charset=utf-8")

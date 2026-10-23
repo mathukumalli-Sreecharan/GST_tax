@@ -19,7 +19,10 @@ export type SheetInfo = {
   preview: { excel_row: number; values: unknown[] }[];
 };
 
-export type InspectResponse = { filename: string; size_bytes: number; sheets: SheetInfo[]; max_upload_bytes: number };
+export type InspectResponse = { filename: string; size_bytes: number; sheets: SheetInfo[]; max_upload_bytes: number;
+  source_info?: { windows_read_only: boolean | null; read_only_recommended: boolean; read_only_detected: boolean };
+  protection?: { workbook_structure: boolean; workbook_windows: boolean; protected_worksheets: string[] };
+};
 
 export type ResultRow = {
   excel_row: number;

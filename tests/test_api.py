@@ -4,7 +4,16 @@ from io import BytesIO
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
+import pytest
+from backend.auth import require_authenticated_user
 from backend.main import app, configured_cors_origins
+
+@pytest.fixture(autouse=True)
+def authenticated_api():
+    app.dependency_overrides[require_authenticated_user] = lambda: "test-user"
+    yield
+    app.dependency_overrides.clear()
+
 
 
 client = TestClient(app)
@@ -51,6 +60,29 @@ def test_inspect_and_process_regression_workbook():
 def test_download_rejects_unknown_file_id():
     response = client.get("/api/excel/download/not-a-real-id")
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize("recommended", [False, True])
+def test_inspection_only_reports_detectable_read_only_metadata(recommended):
+    from test_read_only import workbook_bytes, with_sharing
+    data = workbook_bytes()
+    if recommended:
+        data = with_sharing(data, readOnlyRecommended="1")
+    response = client.post("/api/excel/inspect", files={"file": ("source.xlsx", data)})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source_info"] == {"windows_read_only": None,
+        "read_only_recommended": recommended, "read_only_detected": recommended}
+    assert body["protection"]["protected_worksheets"] == ["Reference"]
+
+
+@pytest.mark.parametrize("endpoint", ["inspect", "process"])
+def test_encrypted_upload_has_specific_error(endpoint):
+    response = client.post(f"/api/excel/{endpoint}",
+        files={"file": ("encrypted.xlsx", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1encrypted")},
+        data={"worksheet": "Sheet", "first_data_row": "2", "invoice_col": "1", "taxable_col": "2"})
+    assert response.status_code == 422
+    assert "Encrypted/password-protected" in response.json()["detail"]
 
 
 def test_api_reports_all_four_rates_and_exports_rate_column():

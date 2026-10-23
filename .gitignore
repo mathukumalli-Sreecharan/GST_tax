@@ -6,3 +6,7 @@ venv/
 frontend/node_modules/
 frontend/.next/
 backend/.tmp/
+
+.env
+.env.*
+!.env.example
