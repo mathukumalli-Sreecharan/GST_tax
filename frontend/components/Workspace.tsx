@@ -11,6 +11,7 @@ import {
   ShieldCheck, Upload, X,
 } from "lucide-react";
 import { DataTable } from "@/components/DataTable";
+import Link from 'next/link';
 import { downloadResult, inspectWorkbook, processWorkbook } from "@/lib/api";
 import type { ColumnMeta, InspectResponse, ProcessResponse, ResultRow, SheetInfo } from "@/lib/types";
 
@@ -320,7 +321,7 @@ export default function Home() {
   const settings = () => <><div className="page-head"><div><div className="eyebrow">APPLICATION POLICY</div><h1>Settings</h1><p className="subtext">Validated calculation settings are read-only.</p></div><ShieldCheck size={18} color="#24744c" /></div><div className="settings-grid"><section className="panel"><div className="panel-head"><h2>Calculation policy</h2></div><div className="panel-body"><Setting label="Supported GST rates" value="5%, 12%, 18%, and 28%" /><Setting label="Automatic match tolerance" value="Less than â‚¹1" /><Setting label="Verification threshold" value="â‚¹1 to less than â‚¹50" /><Setting label="Unmatched threshold" value="â‚¹50 or greater" /><Setting label="Arithmetic" value="Decimal based (existing behavior)" /></div></section><section className="panel"><div className="panel-head"><h2>Workbook preservation</h2></div><div className="panel-body"><Setting label="Supported input format" value=".xlsx" /><Setting label="Processing mode" value="FastAPI + OpenPyXL" /><Setting label="Output structure" value="Rate(%) after Taxable Value" /><Setting label="Verification output" value="Separate CSV report" /><Setting label="Upload limit" value="20 MB" /><p className="subtext" style={{ marginTop: 12 }}>Workbooks are sent to the configured FastAPI service. Unsupported features or formulas that cannot be safely updated are rejected with an explanation.</p></div></section></div></>;
 
   return <><OpeningIntro visible={introVisible} onSkip={() => { setIntroVisible(false); setIntroSequence(false); }} /><div className={`shell ${introSequence ? "intro-reveal" : ""}`}>
-    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="brand"><span className="brand-mark"><BarChart3 size={16} /></span><span>GST Ledger Studio</span></div><div className="nav-label">Workspace</div><nav className="nav-list" aria-label="Main navigation">{pages.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${page === name ? "active" : ""}`} onClick={() => navigate(name)}><Icon size={15} strokeWidth={1.8} />{name}</button>)}</nav><div className="local-note"><span className="local-dot" />FastAPI processing</div></aside>
+    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="brand"><span className="brand-mark"><BarChart3 size={16} /></span><span>GST Ledger Studio</span></div><div className="nav-label">Workspace</div><nav className="nav-list" aria-label="Main navigation">{pages.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${page === name ? "active" : ""}`} onClick={() => navigate(name)}><Icon size={15} strokeWidth={1.8} />{name}</button>)}<Link className="nav-item" href="/my-files"><FileSpreadsheet size={15}/>My Files</Link></nav><div className="local-note"><span className="local-dot" />FastAPI processing</div></aside>
     <main className="main"><header className="topbar"><div style={{ display: "flex", alignItems: "center", gap: 10 }}><button className="btn btn-small mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={15} /></button><div><div className="top-title">{page}</div><div className="top-subtitle">{pageText[page]}</div></div></div><div className="top-right"><span className="local-pill"><span className="local-dot" />FastAPI processing</span><span className="file-chip" title={file?.name}>{file?.name ?? "No workbook selected"}</span></div></header>
       <div className="content">{page === "Dashboard" && dashboard()}{page === "Process Excel" && processPage()}{page === "Verification" && verification()}{page === "Settings" && settings()}</div>
     </main>
@@ -344,7 +345,9 @@ function ResultsView({ result, columns, onDownload, onReport, onRowClick, onNew 
   onReport: () => void; onRowClick: (row: ResultRow) => void; onNew: () => void;
 }) {
   const summary = result.summary;
-  return <><SummaryMetrics summary={summary} />
+  return <>{result.history && <div className={result.history.saved?'success-note':'inline-alert'} role="status" style={{marginBottom:16}}>
+    {result.history.saved?<><Link href="/my-files">Saved to My Files</Link>. Available until {new Date(result.history.expires_at!).toLocaleDateString()}.</>:result.history.warning}
+    </div>}<SummaryMetrics summary={summary} />
     <section className="panel"><div className="panel-head"><div><h2>Processed rows</h2><p className="subtext" style={{ marginTop: 4 }}>{result.filename} Â· {result.worksheet}</p></div><div className="result-actions"><button className="btn btn-small" onClick={onNew}><Upload size={13} />Process another</button><button className="btn btn-small btn-primary" onClick={onDownload}><ArrowDownToLine size={13} />Download Updated Excel</button><button className="btn btn-small" onClick={onReport}><ArrowDownToLine size={13} />Verification report</button></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.rows} columns={columns} statusFilter onRowClick={onRowClick} emptyText="No invoice rows found." /></div></section>
   </>;
 }

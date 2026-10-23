@@ -3,7 +3,7 @@ import type { InspectResponse, ProcessResponse } from "@/lib/types";
 
 const base = (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000").replace(/\/+$/, "");
 
-async function authenticatedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+export async function authenticatedFetch(url: string, init: RequestInit = {}): Promise<Response> {
  const client = browserClient();
  let {data:{session}} = await client.auth.getSession();
  const send = () => fetch(url,{...init,headers:{...init.headers,Authorization:`Bearer ${session?.access_token ?? ''}`}});
@@ -14,7 +14,12 @@ async function authenticatedFetch(url: string, init: RequestInit = {}): Promise<
   if(session) response=await send();
   if(!session || response.status===401) {window.dispatchEvent(new Event('auth-required'));throw new Error('Sign in again, then retry. Your source workbook is retained.');}
  }
+ if(response.status===403 && (url.includes('/api/excel/') || url.includes('/api/files'))) window.dispatchEvent(new Event('approval-required'));
  return response;
+}
+
+export async function approvalApi<T>(path: string, init: RequestInit = {}): Promise<T> {
+ return check<T>(await authenticatedFetch(`${base}/api${path}`, {...init, cache: 'no-store'}));
 }
 
 async function check<T>(response: Response): Promise<T> {
@@ -64,12 +69,24 @@ export async function processWorkbook(file: File, fields: ProcessFields): Promis
 
 export async function downloadResult(fileId: string, kind: "download" | "report", filename: string): Promise<void> {
   const response = await authenticatedFetch(`${base}/api/excel/${kind}/${encodeURIComponent(fileId)}`);
-  if (!response.ok) throw new Error("The download has expired. Process the workbook again.");
+  return saveDownload(response, filename);
+}
+
+export async function downloadSavedFile(fileId: string, filename: string): Promise<void> {
+  return saveDownload(await authenticatedFetch(`${base}/api/files/${encodeURIComponent(fileId)}/download`, {cache:'no-store'}),filename);
+}
+
+async function saveDownload(response: Response, filename: string): Promise<void> {
+  if (!response.ok) {
+    let message = 'This download is unavailable. Check your access and try again.';
+    try { const body = await response.json() as {detail?:string}; if(body.detail) message=body.detail; } catch { /* use safe fallback */ }
+    throw new Error(message);
+  }
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
   anchor.click();
-  URL.revokeObjectURL(url);
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }

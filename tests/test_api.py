@@ -6,11 +6,13 @@ from openpyxl import Workbook, load_workbook
 
 import pytest
 from backend.auth import require_authenticated_user
+from backend.approvals import require_approved_user
 from backend.main import app, configured_cors_origins
 
 @pytest.fixture(autouse=True)
 def authenticated_api():
     app.dependency_overrides[require_authenticated_user] = lambda: "test-user"
+    app.dependency_overrides[require_approved_user] = lambda: "test-user"
     yield
     app.dependency_overrides.clear()
 

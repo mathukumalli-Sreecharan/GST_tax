@@ -1,0 +1,16 @@
+import {createRoot} from 'react-dom/client';
+import {MyFiles} from '../../components/MyFiles';
+import {ApprovalGate} from '../../components/ApprovalGate';
+import {ApprovalAdmin} from '../../components/ApprovalAdmin';
+import {AuthForm} from '../../components/AuthForm';
+import {Account} from '../../components/Account';
+import Workspace from '../../components/Workspace';
+const params=new URLSearchParams(location.search),screen=params.get('screen')||'files';
+let content=<MyFiles/>;
+if(screen==='admin')content=<ApprovalAdmin/>;
+if(screen==='workspace')content=<Workspace/>;
+if(screen==='gate')content=<ApprovalGate initial={{ready:true,status:params.get('status')||'pending',email_verified:true,is_admin:false}} error=""><div>Approved workspace content</div></ApprovalGate>;
+if(screen==='register')content=<AuthForm mode="register"/>;
+if(screen==='login'||location.pathname==='/login')content=<AuthForm mode="login"/>;
+if(screen==='account')content=<Account userId="test-user" name="Test Auditor" email="test@example.com" showFiles/>;
+createRoot(document.getElementById('root')).render(content);

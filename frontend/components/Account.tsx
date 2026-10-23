@@ -2,7 +2,8 @@
 import {useEffect,useState,useRef} from 'react';
 import {browserClient} from '@/lib/supabase/browser';
 import {AuthForm} from './AuthForm';
-export function Account({email,name,userId}:{email:string;name:string;userId:string}) {
+import Link from 'next/link';
+export function Account({email,name,userId,isAdmin=false,showFiles=false}:{email:string;name:string;userId:string;isAdmin?:boolean;showFiles?:boolean}) {
  const dialog = useRef<HTMLDialogElement>(null);
  const [expired,setExpired]=useState(false),[error,setError]=useState('');
  useEffect(()=>{
@@ -18,5 +19,5 @@ export function Account({email,name,userId}:{email:string;name:string;userId:str
   setExpired(false);
  }
  async function logout(){const {error}=await browserClient().auth.signOut();if(error)setError('Unable to sign out. Try again.');else window.location.assign('/login');}
- return <><div className="account-bar"><span>{name || email}</span><button onClick={logout}>Sign out</button>{error && <span role="alert">{error}</span>}</div><dialog ref={dialog} className="auth-modal" aria-label="Session expired" onCancel={e=>e.preventDefault()}><div><p>Your session ended. Sign in to continue with your selected workbook.</p><AuthForm mode="login" onSignedIn={resume}/></div></dialog></>;
+ return <><div className="account-bar"><span>{name || email}</span>{showFiles && <Link href="/my-files">My Files</Link>}{isAdmin && <Link href="/admin">Administration</Link>}<button onClick={logout}>Sign out</button>{error && <span role="alert">{error}</span>}</div><dialog ref={dialog} className="auth-modal" aria-label="Session expired" onCancel={e=>e.preventDefault()}><div><p>Your session ended. Sign in to continue with your selected workbook.</p><AuthForm mode="login" onSignedIn={resume}/></div></dialog></>;
 }

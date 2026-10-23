@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
 from backend.auth import require_authenticated_user
+from backend.approvals import require_approved_user
 from backend.main import app
 
 @pytest.fixture
@@ -55,6 +56,7 @@ def test_cross_user_download_and_report():
     stream=BytesIO();book.save(stream);book.close()
     client=TestClient(app)
     app.dependency_overrides[require_authenticated_user]=lambda:"owner"
+    app.dependency_overrides[require_approved_user]=lambda:"owner"
     try:
         response=client.post("/api/excel/process",files={"file":("test.xlsx",stream.getvalue())},data={"worksheet":"Sheet","first_data_row":2,"invoice_col":1,"taxable_col":2})
         assert response.status_code == 200, response.text
@@ -62,6 +64,7 @@ def test_cross_user_download_and_report():
         for kind in ["download","report"]:
             assert client.get(f"/api/excel/{kind}/{file_id}").status_code == 200
         app.dependency_overrides[require_authenticated_user]=lambda:"other"
+        app.dependency_overrides[require_approved_user]=lambda:"other"
         for kind in ["download","report"]:
             assert client.get(f"/api/excel/{kind}/{file_id}").status_code == 404
     finally:

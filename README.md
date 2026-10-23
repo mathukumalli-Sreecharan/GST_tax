@@ -1,6 +1,29 @@
 # GST Ledger Studio
 
-A local desktop-first Excel GST workflow with a Next.js/TypeScript frontend and a FastAPI backend. It calls the existing OpenPyXL processor and Decimal based GST rules in `excel_processor.py` and `gst_calculator.py`. Authentication uses Supabase Auth and a minimal profile table. Workbook processing stays on the FastAPI host.
+An approval-controlled private beta for Excel GST automation, with the existing Next.js corporate interface, FastAPI/OpenPyXL processing, Supabase Auth, private generated-file history and owner-only administration. All approved auditors have free access.
+
+## Private beta release
+
+- Apply only new migrations 003 and 004 to an already configured approval project; they preserve the designated owner.
+- My Files (`/my-files`) retains private generated workbooks for 30 days, across sessions and devices.
+- Every processing, history, download and deletion request requires a currently approved, verified account.
+- Configure the independent Render maintenance cron before inviting auditors.
+- Follow [BETA_DEPLOYMENT.md](BETA_DEPLOYMENT.md) for Vercel/Render settings, storage policies, security tasks and live acceptance.
+- Owner setup details: [APPROVAL_SETUP.md](APPROVAL_SETUP.md). Read-only handling: [READ_ONLY_SUPPORT.md](READ_ONLY_SUPPORT.md).
+
+Validation commands:
+
+```powershell
+.\env\Scripts\python.exe -m pytest -q
+cd frontend
+npm.cmd test
+npm.cmd run typecheck
+npm.cmd run lint
+npm.cmd run test:browser
+npm.cmd run build
+```
+
+Browser tests use Playwright Chromium (`npx playwright install chromium` on a fresh machine). They exercise real components with synthetic API fixtures; no real credentials or customer files are used.
 
 ## Run locally on Windows
 
@@ -30,7 +53,7 @@ Open `http://localhost:3000`. The frontend calls the local API at `http://localh
 3. Review the first data row and, if present, the existing `Rate(%)` column behavior.
 4. Calculate, inspect results and verification rows, then download the updated workbook and separate CSV report.
 
-Existing GST logic remains in the existing modules: expected taxable values are Invoice Value × 100 / 105 and × 100 / 118; the nearest supported rate is assigned. Differences below ₹1 match, differences from ₹1 to less than ₹50 are assigned and flagged, and differences of ₹50 or more remain blank. Exceptional and ambiguous rows remain flagged. Existing Rate(%) values are kept unless the user confirms recalculation.
+Existing GST logic remains in the existing modules: expected taxable value is Invoice Value × 100 / (100 + GST rate), using the supported 5%, 12%, 18% and 28% rates. Differences below ₹1 match; ₹1 to less than ₹50 assigns the nearest rate and flags verification; ₹50 or greater leaves the rate blank. Ambiguous/invalid rows remain flagged. Existing Rate(%) values are kept unless recalculation is explicitly confirmed.
 
 ## Excel preservation
 
@@ -80,4 +103,4 @@ Run `python -m pytest -q`, then `npm.cmd test` and `npm.cmd run build` in fronte
 Integration follows the official [Supabase SSR guide](https://supabase.com/docs/guides/auth/server-side/creating-a-client) and [JWT verification guide](https://supabase.com/docs/guides/auth/jwts).
 
 
-Latest local verification: 44 Python tests passed, 1 skipped (optional workbook fixture unavailable); 3 frontend security/client tests passed; production build passed; npm audit reported zero vulnerabilities. Live Supabase email/provider acceptance remains pending configuration.
+See BETA_VALIDATION.md for the latest executed checks and remaining live-deployment acceptance tasks.

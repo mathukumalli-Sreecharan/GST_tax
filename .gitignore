@@ -10,3 +10,14 @@ backend/.tmp/
 .env
 .env.*
 !.env.example
+frontend/.beta-browser/
+frontend/test-results/
+frontend/playwright-report/
+*.tsbuildinfo
+# Confidential accounting documents and generated exports do not belong in Git.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.pem
+*.key

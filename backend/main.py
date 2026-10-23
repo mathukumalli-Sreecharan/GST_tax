@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 import re
 import tempfile
@@ -21,7 +22,10 @@ from openpyxl.utils import get_column_letter
 from excel_processor import (PreservationError, detect_columns, detect_rate_column,
                              process_workbook, inspect_source, protection_metadata)
 from gst_calculator import SUPPORTED_RATES, calculate_rate, as_decimal
-from backend.auth import require_authenticated_user
+from backend.approvals import require_approved_user, router as approval_router
+from backend.notifications import deliver_notifications
+from backend.files import router as files_router, save_generated_file, file_download, get_file
+from backend.security import UploadLimitMiddleware, validate_upload_package, validate_production_config
 from verification import report_csv
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,10 +43,23 @@ async def lifespan(app):
             await asyncio.sleep(60)
             purge_expired_results()
     task = asyncio.create_task(cleanup())
+    async def notify():
+        while True:
+            try:
+                await asyncio.to_thread(deliver_notifications)
+            except Exception:
+                logging.getLogger(__name__).warning("Notification worker unavailable; queued requests are retained.")
+            await asyncio.sleep(30)
+    notification_task = asyncio.create_task(notify())
     try:
         yield
     finally:
         task.cancel()
+        notification_task.cancel()
+        try:
+            await notification_task
+        except asyncio.CancelledError:
+            pass
         try:
             await task
         except asyncio.CancelledError:
@@ -52,7 +69,10 @@ async def lifespan(app):
             entry["report"].unlink(missing_ok=True)
         RESULTS.clear()
 
+validate_production_config()
 app = FastAPI(title="GST Ledger Studio API", version="1.0.0", lifespan=lifespan)
+app.include_router(approval_router)
+app.include_router(files_router)
 
 
 def configured_cors_origins(value: str | None = None) -> list[str]:
@@ -63,18 +83,30 @@ def configured_cors_origins(value: str | None = None) -> list[str]:
     return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
 
 
+app.add_middleware(UploadLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_cors_origins(),
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type", "Authorization", "apikey"],
 )
 
 
+@app.middleware("http")
+async def private_response_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if os.getenv("APP_ENV") == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
 def safe_name(name: str) -> str:
     clean = Path(name or "workbook.xlsx").name
-    clean = re.sub(r"[^A-Za-z0-9._ -]", "_", clean)
+    clean = re.sub(r"[^A-Za-z0-9._ -]", "_", clean)[:180]
     return clean if clean.lower().endswith(".xlsx") else f"{Path(clean).stem}.xlsx"
 
 
@@ -103,6 +135,7 @@ async def read_upload(upload: UploadFile) -> tuple[str, bytes]:
         raise HTTPException(400, "The uploaded workbook is empty.")
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "Workbook exceeds the 20 MB upload limit.")
+    validate_upload_package(content)
     return name, content
 
 
@@ -154,7 +187,9 @@ def _inspect_sheet(ws):
 def _safe_error(exc: Exception) -> HTTPException:
     if isinstance(exc, PreservationError):
         return HTTPException(422, str(exc))
-    if isinstance(exc, (ValueError, OSError)):
+    if isinstance(exc, OSError):
+        return HTTPException(400, "Temporary workbook storage could not be accessed. Please retry.")
+    if isinstance(exc, ValueError):
         return HTTPException(400, str(exc))
     return HTTPException(400, "Workbook could not be processed. Check its format and selected columns.")
 
@@ -165,7 +200,7 @@ def health():
 
 
 @app.post("/api/excel/inspect")
-async def inspect_excel(file: UploadFile = File(...), user_id: str = Depends(require_authenticated_user)):
+async def inspect_excel(file: UploadFile = File(...), user_id: str = Depends(require_approved_user)):
     purge_expired_results()
     name, content = await read_upload(file)
     temp = write_temp(name, content)
@@ -203,7 +238,7 @@ async def process_excel(
     taxable_header_row: int | None = Form(None, ge=1),
     recalculate_existing: bool = Form(False),
     confirm_overwrite: bool = Form(False),
-    user_id: str = Depends(require_authenticated_user),
+    user_id: str = Depends(require_approved_user),
 ):
     purge_expired_results()
     if invoice_col == taxable_col:
@@ -213,6 +248,8 @@ async def process_excel(
     name, content = await read_upload(file)
     source = write_temp(name, content)
     output = STORAGE / f"{uuid.uuid4().hex}_{'updated_' + name}"
+    original = None
+    report_path = None
     try:
         inspect_source(content)
         workbook = load_workbook(source, read_only=False, data_only=False, keep_links=True)
@@ -299,20 +336,30 @@ async def process_excel(
         report_path.write_text(report_csv(report_data), encoding="utf-8")
         if not output.exists():
             raise HTTPException(500, "Workbook processor did not produce an output file.")
-        file_id = uuid.uuid4().hex
+        file_id = str(uuid.uuid4())
+        original_name = (file.filename or "workbook.xlsx").replace("\\", "/").rsplit("/", 1)[-1]
+        original_name = re.sub(r"[\x00-\x1f\x7f]", "_", original_name)[:250] or name
+        history = await asyncio.to_thread(save_generated_file, file_id, user_id, original_name, output, summary, len(flagged_rows), output_name="updated_" + name)
         RESULTS[file_id] = {"output": output, "report": report_path, "filename": "updated_" + name,
                             "created": time.time(), "summary": summary, "rows": rows,
-                            "worksheet": worksheet, "source_filename": name, "owner_id": user_id}
+                            "worksheet": worksheet, "source_filename": name, "owner_id": user_id,
+                            "history_saved": history["saved"]}
         return {"file_id": file_id, "filename": "updated_" + name, "worksheet": worksheet,
-                "summary": summary, "rows": rows, "verification": flagged_rows,
+                "summary": summary, "rows": rows, "verification": flagged_rows, "history": history,
                 "rate_column": {"letter": get_column_letter(rate_col), "index": rate_col}}
     except HTTPException:
         output.unlink(missing_ok=True)
+        if report_path:
+            report_path.unlink(missing_ok=True)
         raise
     except Exception as exc:
         output.unlink(missing_ok=True)
+        if report_path:
+            report_path.unlink(missing_ok=True)
         raise _safe_error(exc) from exc
     finally:
+        if original is not None:
+            original.close()
         source.unlink(missing_ok=True)
 
 
@@ -330,14 +377,21 @@ def _get_result(file_id: str, user_id: str):
 
 
 @app.get("/api/excel/download/{file_id}")
-def download_excel(file_id: str, user_id: str = Depends(require_authenticated_user)):
+def download_excel(file_id: str, user_id: str = Depends(require_approved_user)):
+    # Saved results remain downloadable across sessions and server restarts. Do
+    # not serve a stale local copy after its history record is deleted or expired.
+    entry = RESULTS.get(file_id)
+    if entry is None or entry.get("history_saved"):
+        return file_download(file_id, user_id)
     entry = _get_result(file_id, user_id)
     return FileResponse(entry["output"], filename=entry["filename"],
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/excel/report/{file_id}")
-def download_report(file_id: str, user_id: str = Depends(require_authenticated_user)):
+def download_report(file_id: str, user_id: str = Depends(require_approved_user)):
     entry = _get_result(file_id, user_id)
+    if entry.get("history_saved"):
+        get_file(file_id, user_id)
     return FileResponse(entry["report"], filename=f"verification_{Path(entry['source_filename']).stem}.csv",
                         media_type="text/csv; charset=utf-8")

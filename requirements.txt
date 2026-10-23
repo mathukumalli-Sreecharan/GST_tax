@@ -5,3 +5,5 @@ fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
 python-multipart>=0.0.9
 PyJWT[crypto]>=2.10,<3
+python-dotenv>=1,<2
+defusedxml>=0.7,<1

@@ -1,0 +1,29 @@
+# Create the gst-ledger-beta environment group before using this Blueprint.
+# See BETA_DEPLOYMENT.md for the exact variables and release order.
+services:
+  - type: web
+    name: gst-ledger-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log
+    healthCheckPath: /api/health
+    envVars:
+      - fromGroup: gst-ledger-beta
+      - key: APP_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: 3.12.10
+  - type: cron
+    name: gst-ledger-maintenance
+    runtime: python
+    plan: starter
+    schedule: "*/5 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m backend.maintenance
+    envVars:
+      - fromGroup: gst-ledger-beta
+      - key: APP_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: 3.12.10

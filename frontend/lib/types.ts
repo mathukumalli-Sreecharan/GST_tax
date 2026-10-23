@@ -52,6 +52,7 @@ export type ResultRow = {
 };
 
 export type ProcessResponse = {
+  history?: {saved: boolean; id?: string; expires_at?: string; warning?: string};
   file_id: string;
   filename: string;
   worksheet: string;
