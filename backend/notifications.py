@@ -108,11 +108,15 @@ def deliver_notifications(limit=5):
         try:
             payload = item["payload"]
             # Never rewrite a frozen payload: Resend requires identical retries.
+            # HTML is rendered/escaped by the service-only SQL template at first claim.
+            # Do not sanitize or rebuild it here: that would change frozen retry bytes.
             # This also protects deployments that have not applied migration 005 yet.
             if (item.get("kind") != "request" or not isinstance(payload, dict)
                     or payload.get("to") != [recipient]
                     or payload.get("from") != sender
-                    or set(payload) != {"from", "to", "subject", "text"}):
+                    or set(payload) not in ({"from", "to", "subject", "text"}, {"from", "to", "subject", "text", "html"})
+                    or any(not isinstance(payload[field], str) or not payload[field].strip()
+                           for field in ("subject", "text", *(('html',) if 'html' in payload else ())))):
                 raise ValueError("Unsafe frozen notification payload")
             request = Request("https://api.resend.com/emails", json.dumps(item["payload"]).encode(),
                 {"Authorization": "Bearer " + key, "Content-Type": "application/json",

@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
 
 from gst_calculator import calculate_rate
+from monetary_totals import aggregate, write_totals, header_at
 
 
 class PreservationError(ValueError):
@@ -84,16 +85,22 @@ def detect_columns(ws, scan_rows=40):
     for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, scan_rows)):
         for cell in row:
             text = _norm(cell.value)
-            if "invoice" in text and "value" in text:
+            if header_at(ws, cell) == "invoice":
                 candidates["invoice"].append((cell.row, cell.column, text))
-            if "taxable" in text and "value" in text:
+            if header_at(ws, cell) == "taxable":
                 candidates["taxable"].append((cell.row, cell.column, text))
     def choose(items, kind):
-        if not items:
+        if not items or len({item[1] for item in items}) != 1:
             return None
-        # Prefer a specific invoice value header; then earliest row and leftmost position.
-        return sorted(items, key=lambda x: (0 if kind == "invoice" and "invoice value" in x[2] else 1,
-                                             x[0], x[1]))[0]
+        # Extend the first contiguous header block through vertically split labels/units.
+        ordered = sorted(items, key=lambda item: (item[0], item[1]))
+        selected = ordered[0]
+        for candidate in ordered[1:]:
+            if candidate[0] == selected[0] + 1:
+                selected = candidate
+            elif candidate[0] > selected[0] + 1:
+                break
+        return selected
     inv, tax = choose(candidates["invoice"], "invoice"), choose(candidates["taxable"], "taxable")
     if inv is None or tax is None or inv[1] == tax[1]:
         return None
@@ -139,7 +146,7 @@ def _assert_supported(path, wb, ws):
 
 def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, header_row,
                      invoice_header_row=None, taxable_header_row=None,
-                     existing_rate_col=None, recalculate_existing=False):
+                     existing_rate_col=None, recalculate_existing=False, monetary_columns=None):
     """Insert Rate(%) immediately after taxable column; return summary and flagged rows."""
     destination = Path(destination)
     source_path = Path(source) if isinstance(source, (str, Path)) else None
@@ -171,7 +178,13 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
     if ws.protection.sheet and (not existing_rate_col or recalculate_existing):
         wb.close()
         raise PreservationError("The selected worksheet is protected. Updating Rate(%) would bypass worksheet protection. Use an authorized unprotected copy or keep existing rates.")
+    totals = aggregate(ws, header_row + 1, invoice_col, taxable_col, monetary_columns)
+    if detected_rate and any(item['source_column'] == detected_rate[0] for item in totals['columns'].values()):
+        wb.close()
+        raise ValueError('Rate (%) cannot be a monetary column.')
+    included_rows = set(totals['included_rows'])
     rate_col = existing_rate_col or (taxable_col + 1)
+
     rate_letter = get_column_letter(rate_col)
     if not existing_rate_col:
         # OpenPyXL does not shift merged ranges when inserting columns. Rebuild them
@@ -226,12 +239,15 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
         new_dimension = ws.column_dimensions[rate_letter]
         if ws.column_dimensions[old_letter].width is not None:
             new_dimension.width = ws.column_dimensions[old_letter].width
+    if not existing_rate_col and invoice_col >= rate_col:
+        invoice_col += 1
+    totals_changed = write_totals(wb, ws, totals, rate_col if not existing_rate_col else None)
     summary = {5: 0, 12: 0, 18: 0, 28: 0, "unmatched": 0}
     flagged = []
     inv_header = _cell_header(ws, invoice_col, invoice_header_row)
     tax_header = _cell_header(ws, taxable_col, taxable_header_row)
     # Keep original physical row numbering and blank rows; process each row independently.
-    for row in range(max(invoice_header_row, taxable_header_row) + 1, ws.max_row + 1):
+    for row in sorted(included_rows):
         result = calculate_rate(ws.cell(row, invoice_col).value, ws.cell(row, taxable_col).value)
         if not existing_rate_col or recalculate_existing:
             ws.cell(row, rate_col).value = result.rate
@@ -247,8 +263,8 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
                             "difference": str(result.difference) if result.difference is not None else "",
                             "rate": result.rate, "message": result.message})
     try:
-        if existing_rate_col and not recalculate_existing:
-            # Keeping existing rates must not alter workbook package content.
+        if existing_rate_col and not recalculate_existing and not totals_changed:
+            # Preserve the original bytes when no workbook update is possible or needed.
             destination.write_bytes(source_data)
         else:
             wb.save(destination)
@@ -265,4 +281,5 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
     finally:
         wb.close()
     return {"source_info": source_info, "summary": summary, "flagged": flagged, "rate_col": rate_col,
-            "rate_letter": rate_letter, "invoice_header": inv_header, "taxable_header": tax_header}
+            "rate_letter": rate_letter, "invoice_header": inv_header, "taxable_header": tax_header,
+            "column_totals": totals}

@@ -103,6 +103,11 @@ def list_approvals(response: Response, status: Status | None = None,
     return rpc("admin_approval_list", {"p_actor": actor, "p_owner": owner_id(), "p_status": status, "p_offset": offset})
 
 
+@router.get("/admin/approvals/{user_id}")
+def applicant_detail(user_id: UUID, actor: str = Depends(require_admin)):
+    return rpc("admin_approval_applicant", {"p_actor": actor, "p_owner": owner_id(), "p_user": str(user_id)})
+
+
 class Decision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["approved", "rejected", "revoked"]

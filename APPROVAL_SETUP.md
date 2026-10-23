@@ -93,4 +93,6 @@ Before production rollout, verify a real email-confirmation signup, an owner not
 
 References: [Supabase database function security](https://supabase.com/docs/guides/database/functions), [Supabase RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), [Resend idempotency keys](https://resend.com/docs/dashboard/emails/idempotency-keys).
 
-Apply only unapplied migrations through `005_admin_request_notifications.sql` before starting the updated worker. Do not rerun bootstrap for the approved administrator. See [NOTIFICATION_DELIVERY.md](NOTIFICATION_DELIVERY.md) for release steps, recovery and Render Free timing.
+Apply only unapplied migrations through `006_email_approval_actions.sql` before starting the updated worker. Do not rerun bootstrap for the approved administrator. See [NOTIFICATION_DELIVERY.md](NOTIFICATION_DELIVERY.md) for release steps, recovery and Render Free timing.
+
+New administrator emails include Approve/Reject links to an authenticated confirmation page. A GET never changes approval; an explicit owner confirmation reuses the existing audited POST. Frozen emails retain their original content. See [ENHANCEMENT_REPORT.md](ENHANCEMENT_REPORT.md) for the current release.

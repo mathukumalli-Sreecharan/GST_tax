@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from backend.notifications import deliver_notifications
 from backend.files import router as files_router, save_generated_file, file_download, get_file
 from backend.security import UploadLimitMiddleware, validate_upload_package, validate_production_config
 from verification import report_csv
+from monetary_totals import detect_monetary_columns
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -181,7 +183,8 @@ def _inspect_sheet(ws):
         preview.append({"excel_row": row_index, "values": [cell for cell in row]})
     return {"name": ws.title, "max_row": ws.max_row, "max_column": ws.max_column,
             "detected": detected, "existing_rate": ({"column": rate[0], "header_row": rate[1]} if rate else None),
-            "invoice_number": invoice_number, "columns": columns, "preview": preview}
+            "invoice_number": invoice_number, "columns": columns, "preview": preview,
+            "monetary_detection": detect_monetary_columns(ws)}
 
 
 def _safe_error(exc: Exception) -> HTTPException:
@@ -234,6 +237,7 @@ async def process_excel(
     invoice_col: int = Form(..., ge=1),
     taxable_col: int = Form(..., ge=1),
     invoice_number_col: int | None = Form(None, ge=1),
+    monetary_columns: str | None = Form(None),
     invoice_header_row: int | None = Form(None, ge=1),
     taxable_header_row: int | None = Form(None, ge=1),
     recalculate_existing: bool = Form(False),
@@ -264,23 +268,33 @@ async def process_excel(
                 raise HTTPException(400, "The existing Rate(%) column cannot also be an input value column.")
             inv_header = invoice_header_row or max(1, first_data_row - 1)
             tax_header = taxable_header_row or max(1, first_data_row - 1)
+            try:
+                monetary_mapping = json.loads(monetary_columns) if monetary_columns else None
+            except ValueError:
+                raise HTTPException(400, "Monetary column mapping must be a JSON object.") from None
+            if monetary_mapping is not None and not isinstance(monetary_mapping, dict):
+                raise HTTPException(400, "Monetary column mapping must be a JSON object.")
+            if not (1 <= invoice_col <= ws.max_column and 1 <= taxable_col <= ws.max_column):
+                raise HTTPException(400, "Selected value column is outside the worksheet.")
+            if max(inv_header, tax_header) >= first_data_row:
+                raise HTTPException(400, "Header rows must precede the first data row.")
             result = process_workbook(source, output, worksheet, invoice_col, taxable_col,
                                       first_data_row - 1, inv_header, tax_header,
                                       existing[0] if existing else None,
-                                      bool(existing and recalculate_existing and confirm_overwrite))
+                                      bool(existing and recalculate_existing and confirm_overwrite), monetary_mapping)
             # Read source values and produce a typed row result table from the same calculation engine.
             original = load_workbook(source, read_only=True, data_only=False, keep_links=True)
             original_ws = original[worksheet]
             rate_col = existing[0] if existing else taxable_col + 1
             rows = []
             matches = 0
-            for row_index in range(first_data_row, original_ws.max_row + 1):
+            issues_by_row = {}
+            for issue in result['column_totals']['issues']:
+                issues_by_row.setdefault(issue['row'], []).append(issue)
+            for row_index in result["column_totals"]["included_rows"]:
                 invoice_raw = original_ws.cell(row_index, invoice_col).value
                 taxable_raw = original_ws.cell(row_index, taxable_col).value
                 number = original_ws.cell(row_index, invoice_number_col).value if invoice_number_col else None
-                # Ignore fully blank formatted rows in the UI; they remain untouched in the workbook.
-                if invoice_raw is None and taxable_raw is None and number is None:
-                    continue
                 calc = calculate_rate(invoice_raw, taxable_raw)
                 inv = as_decimal(invoice_raw)
                 taxable_decimal = as_decimal(taxable_raw)
@@ -292,6 +306,13 @@ async def process_excel(
                 status = ("AMBIGUOUS" if "ambiguous" in calc.message.lower() else
                           "INVALID" if calc.rate is None and (inv is None or as_decimal(taxable_raw) is None or inv <= 0 or as_decimal(taxable_raw) <= 0 or inv < as_decimal(taxable_raw)) else
                           "UNMATCHED" if calc.rate is None else "REVIEW REQUIRED" if calc.flagged else "MATCHED")
+                monetary_issues = issues_by_row.get(row_index, [])
+                reason = calc.message
+                if monetary_issues:
+                    reason = (reason + "; " if reason else "") + " ".join(
+                        f"{issue['field'].upper()} ({get_column_letter(issue['column'])}): {issue['message']}" for issue in monetary_issues)
+                    if status == "MATCHED":
+                        status = "REVIEW REQUIRED"
                 rows.append({"excel_row": row_index, "invoice_number": str(number) if number is not None else "",
                              "invoice_value": str(invoice_raw) if invoice_raw is not None else "",
                              "taxable_value": str(taxable_raw) if taxable_raw is not None else "",
@@ -300,7 +321,7 @@ async def process_excel(
                                 for rate in SUPPORTED_RATES},
                              **{f"expected_{rate}": str(expected[rate]) if expected[rate] is not None else ""
                                 for rate in SUPPORTED_RATES},
-                             "status": status, "reason": calc.message,
+                             "status": status, "reason": reason,
                              "invoice_column": invoice_col, "invoice_letter": get_column_letter(invoice_col),
                              "invoice_header": str(original_ws.cell(inv_header, invoice_col).value or f"Column {get_column_letter(invoice_col)}"),
                              "taxable_column": taxable_col, "taxable_letter": get_column_letter(taxable_col),
@@ -346,6 +367,7 @@ async def process_excel(
                             "history_saved": history["saved"]}
         return {"file_id": file_id, "filename": "updated_" + name, "worksheet": worksheet,
                 "summary": summary, "rows": rows, "verification": flagged_rows, "history": history,
+                "column_totals": result["column_totals"],
                 "rate_column": {"letter": get_column_letter(rate_col), "index": rate_col}}
     except HTTPException:
         output.unlink(missing_ok=True)

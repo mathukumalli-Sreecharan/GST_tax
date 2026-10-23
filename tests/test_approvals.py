@@ -1,3 +1,4 @@
+from copy import deepcopy
 from io import BytesIO
 import json
 from unittest.mock import patch
@@ -26,6 +27,8 @@ def access(monkeypatch):
         calls.append((name, params))
         if name == 'approval_context':
             return dict(state)
+        if name == 'admin_approval_applicant':
+            return {'user_id':params['p_user'], 'status':state['status']}
         if name == 'admin_approval_list':
             return {'users': [], 'counts': {'total': 0}}
         if name == 'change_approval':
@@ -141,10 +144,14 @@ def email_config(monkeypatch):
         monkeypatch.setenv(key,value)
 
 
+@pytest.mark.parametrize('with_html', [False, True])
 @pytest.mark.parametrize('fails', [False, True])
-def test_email_delivery_and_failure_retains_outbox(email_config, fails):
+def test_email_delivery_and_failure_retains_outbox(email_config, fails, with_html):
     item = {'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
         'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request','text':'Verified applicant'}}
+    if with_html:
+        item['payload']['html']='<p>Verified &lt;applicant&gt;</p>'
+    original=deepcopy(item)
     with patch('backend.notifications.rpc', side_effect=[item,None,None]) as database, patch('backend.notifications.urlopen') as provider:
         if fails:
             provider.side_effect = URLError('timeout')
@@ -153,7 +160,10 @@ def test_email_delivery_and_failure_retains_outbox(email_config, fails):
         assert deliver_notifications(limit=1) == (0 if fails else 1)
         request = provider.call_args.args[0]
         assert request.get_header('Idempotency-key') == 'gst-approval/'+item['id']
-        assert json.loads(request.data) == item['payload']
+        assert request.get_header('User-agent') == 'GST-Ledger-Studio/1.0'
+        assert request.get_header('Accept') == 'application/json'
+        assert json.loads(request.data) == original['payload']
+        assert item == original
         call, params = database.call_args.args
         assert call == 'finish_approval_notification'
         assert params['p_id'] == item['id'] and params['p_lease'] == item['lease_token']
@@ -208,18 +218,21 @@ def test_testing_sender_403_records_actionable_diagnostic(email_config,monkeypat
     with patch('backend.notifications.rpc',side_effect=[item,None]) as db,patch('backend.notifications.urlopen',side_effect=failure):
         assert deliver_notifications(limit=1)==0
         details=db.call_args.args[1]
-        assert 'Resend account owner Gmail' in details['p_error']
+        assert 'Resend HTTP 403: unrecognized' in details['p_error']
         assert 'sensitive' not in details['p_error']
         assert details['p_provider_id'] is None
 
+@pytest.mark.parametrize('with_html', [False, True])
 @pytest.mark.parametrize('change', [
     {'kind':'approved'}, {'kind':'rejected'}, {'kind':'revoked'},
     {'to':['applicant@example.com']}, {'bcc':['applicant@example.com']},
     {'from':'old@example.com'},
 ])
-def test_non_admin_or_decision_payload_is_never_sent(email_config, change):
+def test_non_admin_or_decision_payload_is_never_sent(email_config, change, with_html):
     item={'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
         'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request','text':'Applicant'}}
+    if with_html:
+        item['payload']['html']='<p>Applicant</p>'
     if 'kind' in change:
         item.update(change)
     else:
@@ -253,3 +266,63 @@ def test_invalid_admin_configuration_does_not_claim(email_config,monkeypatch,rec
     with patch('backend.notifications.rpc') as db:
         assert deliver_notifications()==0
         db.assert_not_called()
+
+
+def test_opt_in_error_logs_do_not_include_credentials_or_applicant(email_config,monkeypatch,caplog):
+    monkeypatch.setenv('RESEND_DIAGNOSTICS','1')
+    item={'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
+        'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request','text':'Private Applicant'}}
+    failure=HTTPError('https://api.resend.com/emails',403,'Forbidden',{'Server':'cloudflare'},BytesIO(b'error code: 1010 Private Applicant test-server-secret'))
+    with patch('backend.notifications.rpc',side_effect=[item,None]) as db, patch('backend.notifications.urlopen',side_effect=failure):
+        assert deliver_notifications(limit=1)==0
+    assert 'edge_1010' in caplog.text
+    for secret in ['test-server-secret','Private Applicant','owner@gmail.com',item['lease_token']]:
+        assert secret not in caplog.text
+        assert secret not in str(db.call_args.args[1]['p_error'])
+
+
+def test_email_confirmation_detail_get_is_owner_only_and_read_only(access):
+    client,state,calls=access
+    assert client.get('/api/admin/approvals/'+OTHER).status_code==403
+    assert calls==[]
+    app.dependency_overrides[require_authenticated_user]=lambda:OWNER
+    state.update(status='approved',is_admin=True)
+    response=client.get('/api/admin/approvals/'+OTHER)
+    assert response.status_code==200
+    assert calls[-1]==('admin_approval_applicant',{'p_actor':OWNER,'p_owner':OWNER,'p_user':OTHER})
+    assert all(name!='change_approval' for name,_ in calls)
+    assert client.get('/api/admin/approvals/'+OTHER+'?decision=approved').status_code==200
+    assert all(name!='change_approval' for name,_ in calls)
+
+
+def test_unauthenticated_email_applicant_detail_get_requires_jwt():
+    assert TestClient(app).get('/api/admin/approvals/'+USER).status_code==401
+
+
+def test_html_notification_keeps_identical_frozen_payload_and_key(email_config):
+    item={'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
+        'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request',
+        'text':'Review and confirm','html':'<p>Approve or reject after signing in</p>'}}
+    with patch('backend.notifications.rpc',side_effect=[item,None,item,None]), patch('backend.notifications.urlopen') as provider:
+        provider.side_effect=URLError('timeout')
+        deliver_notifications(limit=1);deliver_notifications(limit=1)
+        requests=[call.args[0] for call in provider.call_args_list]
+        assert len(requests)==2
+        assert requests[0].data==requests[1].data
+        assert json.loads(requests[0].data)==item['payload']
+        assert requests[0].get_header('Idempotency-key')==requests[1].get_header('Idempotency-key')
+
+
+@pytest.mark.parametrize('field',['subject','text','html'])
+@pytest.mark.parametrize('value',[None,42,{},''])
+def test_malformed_frozen_message_fields_are_blocked_without_mutation(email_config,field,value):
+    item={'id':str(uuid4()),'lease_token':str(uuid4()),'kind':'request','payload':{
+        'from':'Access <access@example.com>','to':['owner@gmail.com'],'subject':'Request',
+        'text':'Review and confirm','html':'<p>Review and confirm</p>'}}
+    item['payload'][field]=value
+    original=deepcopy(item)
+    with patch('backend.notifications.rpc',side_effect=[item,None]) as db, patch('backend.notifications.urlopen') as provider:
+        assert deliver_notifications(limit=1)==0
+        provider.assert_not_called()
+        assert 'blocked' in db.call_args.args[1]['p_error']
+        assert item==original

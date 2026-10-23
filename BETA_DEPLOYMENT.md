@@ -156,3 +156,7 @@ Then use two real browser accounts against the deployed environment:
 No live Vercel/Render deployment or real mailbox delivery has been verified from this workspace. Follow these manual steps before inviting auditors.
 
 References: [Supabase private bucket access](https://supabase.com/docs/guides/storage/buckets/fundamentals), [Supabase object deletion](https://supabase.com/docs/guides/storage/management/delete-objects), [Render cron jobs](https://render.com/docs/cronjobs), [Render Blueprint specification](https://render.com/docs/blueprint-spec).
+
+## Monetary totals and email confirmation release
+
+Apply only unapplied migrations through `006_email_approval_actions.sql`. Deploy the compatible Render backend and Vercel confirmation page before applying 006 to activate new-email links. No new required environment variables or infrastructure are needed. See [ENHANCEMENT_REPORT.md](ENHANCEMENT_REPORT.md) for the complete release order, testing and limitations.

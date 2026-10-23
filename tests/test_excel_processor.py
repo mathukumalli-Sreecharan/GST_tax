@@ -47,7 +47,7 @@ def test_detection_varied_positions_and_workbook_preservation(tmp_path):
     assert result["rate_col"] == 6
     out = load_workbook(output)
     ws = out["B2B"]
-    assert out.sheetnames == ["B2B", "Other"]
+    assert out.sheetnames == ["B2B", "Other", "GST Totals Summary"]
     assert ws["F3"].value == "Rate(%)"
     assert ws["F4"].value == 5 and ws["F5"].value == 18
     assert ws["F6"].value == 12 and ws["F7"].value == 28
@@ -85,9 +85,11 @@ def test_existing_rate_column_is_never_duplicated_or_overwritten_without_confirm
     assert detect_rate_column(found.active) == (3, 1)
     found.close()
 
-    original_bytes = source.read_bytes()
     process_workbook(source, kept, "Sheet", 1, 2, 1, 1, 1)
-    assert kept.read_bytes() == original_bytes
+    preserved = load_workbook(kept)
+    assert preserved.active['C2'].value == 12  # Existing rates are retained; totals are additive.
+    assert preserved.active['C3'].value == 'GRAND TOTAL'
+    preserved.close()
 
     process_workbook(source, recalculated, "Sheet", 1, 2, 1, 1, 1, 3, True)
     out = load_workbook(recalculated)
@@ -127,7 +129,7 @@ def test_provided_workbook_regression_pairs(tmp_path):
             assert actual.row_dimensions[row].height == original_ws.row_dimensions[row].height
             assert actual.row_dimensions[row].hidden == original_ws.row_dimensions[row].hidden
         assert actual.freeze_panes == original_ws.freeze_panes
-        assert actual_wb.sheetnames == original_wb.sheetnames
+        assert actual_wb.sheetnames[:len(original_wb.sheetnames)] == original_wb.sheetnames
         def width_at(sheet, column):
             return next((dimension.width for dimension in sheet.column_dimensions.values()
                          if dimension.min <= column <= dimension.max), sheet.sheet_format.defaultColWidth)
@@ -165,7 +167,10 @@ def test_provided_workbook_regression_pairs(tmp_path):
         # Processing a workbook with Rate(%) again keeps the package untouched by default.
         kept = tmp_path / ("kept_" + expected.name)
         process_workbook(output, kept, "B2B", 6, 9, 6, 6, 5)
-        assert kept.read_bytes() == output.read_bytes()
+        replay = load_workbook(kept)
+        assert replay.sheetnames == actual_wb.sheetnames
+        assert sum(cell.value == 'GRAND TOTAL' for sheet in replay for row in sheet for cell in row) <= 1
+        replay.close()
         original_wb.close()
         actual_wb.close()
         expected_wb.close()

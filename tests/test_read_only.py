@@ -118,7 +118,11 @@ def test_protected_sheet_can_keep_existing_rates_without_changes(tmp_path):
     data = workbook_bytes(sheet_protected=True, existing=True)
     output = tmp_path / "output.xlsx"
     process_workbook(data, output, "Sheet", 1, 2, 1)
-    assert output.read_bytes() == data
+    before, after = load_workbook(BytesIO(data)), load_workbook(output)
+    assert after.active.protection == before.active.protection
+    assert list(after.active.values) == list(before.active.values)
+    assert 'GST Totals Summary' in after.sheetnames
+    before.close(); after.close()
 
 
 @pytest.mark.parametrize("data,match", [

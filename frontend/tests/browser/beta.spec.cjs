@@ -62,10 +62,32 @@ test('public registration requests verification and regular account hides admin 
 test('Excel upload and mapping retain read-only notice and honest history failure message',async({page})=>{
  const columns=[{index:1,letter:'A',header:'Invoice Value'},{index:2,letter:'B',header:'Taxable Value'}];
  await page.route('**/api/excel/inspect',route=>route.fulfill({json:{filename:'audit.xlsx',size_bytes:10,max_upload_bytes:20971520,source_info:{read_only_detected:true},sheets:[{name:'Sheet',max_row:2,max_column:2,detected:{invoice_col:1,taxable_col:2,invoice_header_row:1,taxable_header_row:1},existing_rate:null,columns,preview:[{excel_row:1,values:['Invoice Value','Taxable Value']},{excel_row:2,values:[105,100]}]}]}}));
- await page.route('**/api/excel/process',route=>route.fulfill({json:{file_id:file.id,filename:file.output_filename,worksheet:'Sheet',history:{saved:false,warning:'Permanent save could not be confirmed. Use the current-session download.'},summary:{total:1,matched:1,rate_counts:{5:1,12:0,18:0,28:0},review_required:0,unmatched:0,status_counts:{}},rows:[],verification:[],rate_column:{letter:'C',index:3}}}));
+ await page.route('**/api/excel/process',route=>route.fulfill({json:{file_id:file.id,filename:file.output_filename,worksheet:'Sheet',history:{saved:false,warning:'Permanent save could not be confirmed. Use the current-session download.'},summary:{total:1,matched:1,rate_counts:{5:1,12:0,18:0,28:0},review_required:0,unmatched:0,status_counts:{}},column_totals:{worksheet:'Sheet',columns:{invoice:{label:'Invoice Value',source_column:1,total:'105.00',blank_count:0,invalid_count:0},taxable:{label:'Taxable Value',source_column:2,total:'100.00',blank_count:0,invalid_count:0}},included_rows:[2],excluded_rows:[],issues:[],warnings:[],output:{worksheet:'Sheet',mode:'grand_total_row',row:3}},rows:[],verification:[],rate_column:{letter:'C',index:3}}}));
  await page.route('**/api/excel/download/**',route=>route.fulfill({body:'synthetic workbook'}));
  await page.goto('/?screen=workspace');await page.getByRole('button',{name:'Skip introduction'}).click();await page.getByRole('button',{name:'Process Excel',exact:true}).click();
  await page.locator('input[type=file]').setInputFiles({name:'audit.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:Buffer.from('synthetic')});
  await expect(page.getByText(/Read-only source detected/)).toBeVisible();await page.getByRole('button',{name:'Continue to processing'}).click();await page.getByRole('button',{name:'Calculate GST Rates',exact:true}).click();await expect(page.getByText(/Permanent save could not be confirmed/)).toBeVisible();
+ await expect(page.getByRole('heading',{name:'GST Column Totals'})).toBeVisible();await expect(page.getByText('\u20b9105.00',{exact:true})).toBeVisible();
  const download=page.waitForEvent('download');await page.getByRole('button',{name:'Download Updated Excel',exact:true}).click();await download;
+});
+
+
+for(const decision of ['approved','rejected'])test(`email ${decision} confirmation is safe on open and mobile`,async({page})=>{
+ const actions=[];
+ let applicant={user_id:file.id,is_owner:false,full_name:'Test Auditor',verified_email:'verified@example.com',registered_at:file.created_at,status:'pending',decided_at:null,decided_by:null};
+ await page.route('**/api/admin/approvals/**',route=>{
+  if(route.request().method()==='POST'){
+   const body=route.request().postDataJSON();actions.push(body);applicant={...applicant,status:body.status};
+  }
+  return route.fulfill({json:applicant});
+ });
+ await page.setViewportSize({width:390,height:844});
+ await page.goto('/?screen=email-action&decision='+decision);
+ await expect(page.getByText('verified@example.com',{exact:true})).toBeVisible();
+ expect(actions).toHaveLength(0);
+ await page.getByRole('button',{name:decision==='approved'?'Confirm approval':'Confirm rejection',exact:true}).click();
+ await expect(page.getByText(/Your decision has been recorded/)).toBeVisible();
+ expect(actions).toEqual([{status:decision,expected_status:'pending'}]);
+ await expect(page.getByRole('button',{name:/Confirm approval|Confirm rejection/})).toHaveCount(0);
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
 });

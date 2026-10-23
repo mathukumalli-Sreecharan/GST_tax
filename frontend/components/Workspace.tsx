@@ -99,6 +99,7 @@ export default function Home() {
     window.setTimeout(() => setIntroSequence(false), 2600);
   }, []);
 
+  const [monetaryColumns, setMonetaryColumns] = useState<Record<string, number | null>>({});
   const activeSheet: SheetInfo | undefined = inspection?.sheets.find((sheet) => sheet.name === sheetName);
   const mappingForm = useForm<MappingValues>({ resolver: zodResolver(mappingSchema), defaultValues: { invoiceCol: 1, taxableCol: 2 } });
   const invoiceCol = mappingForm.watch("invoiceCol");
@@ -118,6 +119,7 @@ export default function Home() {
       const initial = inspected.sheets[0];
       if (initial) {
         setSheetName(initial.name);
+        setMonetaryColumns({});
         const found = initial.detected;
         mappingForm.reset({ invoiceCol: found?.invoice_col ?? 1, taxableCol: found?.taxable_col ?? Math.min(2, initial.max_column) });
         setInvoiceNumberCol(initial.invoice_number?.column ?? null);
@@ -132,6 +134,7 @@ export default function Home() {
     const next = inspection?.sheets.find((item) => item.name === name);
     if (!next) return;
     setSheetName(name);
+    setMonetaryColumns({});
     mappingForm.reset({ invoiceCol: next.detected?.invoice_col ?? 1, taxableCol: next.detected?.taxable_col ?? Math.min(2, next.max_column) });
     setInvoiceNumberCol(next.invoice_number?.column ?? null);
     setFirstDataRow(next.detected ? Math.max(next.detected.invoice_header_row, next.detected.taxable_header_row) + 1 : 2);
@@ -148,7 +151,7 @@ export default function Home() {
     setBusy(true); setError(""); setSuccess(""); setStage(2);
     try {
       const processed = await processWorkbook(file, { worksheet: sheetName, firstDataRow,
-        invoiceCol, taxableCol, invoiceNumberCol,
+        invoiceCol, taxableCol, invoiceNumberCol, monetaryColumns,
         invoiceHeaderRow: activeSheet.detected?.invoice_header_row ?? firstDataRow - 1,
         taxableHeaderRow: activeSheet.detected?.taxable_header_row ?? firstDataRow - 1,
         recalculateExisting: Boolean(activeSheet.existing_rate && rateAction === "recalculate"),
@@ -255,6 +258,15 @@ export default function Home() {
           <select aria-label="Invoice Number column" value={invoiceNumberCol ?? ""} onChange={(event) => setInvoiceNumberCol(event.target.value ? Number(event.target.value) : null)}>
             <option value="">Not selected</option>{activeSheet.columns.map((column) => <option key={column.index} value={column.index}>{colLabel(column)}</option>)}
           </select></div>
+        {activeSheet.monetary_detection?.warnings.map(warning=><p className="inline-alert" key={warning}>{warning}</p>)}
+        {(['igst','cgst','sgst','cess'] as const).map(key=><div className="mapping-row" key={key}>
+          <strong>{key==='sgst'?'SGST/UTGST':key.toUpperCase()} total</strong><span className="subtext">Monetary column</span>
+          <select aria-label={`${key.toUpperCase()} total column`} value={key in monetaryColumns ? monetaryColumns[key] ?? '' : activeSheet.monetary_detection?.columns[key] ?? ''}
+            onChange={event=>setMonetaryColumns({...monetaryColumns,[key]:event.target.value?Number(event.target.value):null})}>
+            <option value="">Unavailable / not selected</option>
+            {activeSheet.columns.filter(column=>!column.is_rate).map(column=><option key={column.index} value={column.index}>{colLabel(column)}</option>)}
+          </select>
+        </div>)}
         <div className="form-grid" style={{ marginTop: 14 }}>
           <div className="field"><label htmlFor="first-row">First data row</label><input id="first-row" type="number" min={2} max={activeSheet.max_row} value={firstDataRow} onChange={(event) => setFirstDataRow(Number(event.target.value))} /></div>
           <div className="field"><label>Detected invoice header</label><input value={activeSheet.detected?.invoice_header_row ?? "Manual selection"} readOnly /></div>
@@ -340,6 +352,11 @@ function SummaryMetrics({ summary }: { summary: ProcessResponse["summary"] }) {
     {metric("Unmatched records", summary.unmatched, "No rate assigned", "#9c3434")}
   </div>;
 }
+function formatTotalCurrency(value: string): string {
+  const negative = value.startsWith('-');
+  const [whole, cents = '00'] = value.replace(/^-/, '').split('.');
+  return `${negative ? '-' : ''}\u20b9${new Intl.NumberFormat('en-IN').format(BigInt(whole))}.${cents}`;
+}
 function ResultsView({ result, columns, onDownload, onReport, onRowClick, onNew }: {
   result: ProcessResponse; columns: ColumnDef<ResultRow, unknown>[]; onDownload: () => void;
   onReport: () => void; onRowClick: (row: ResultRow) => void; onNew: () => void;
@@ -348,6 +365,17 @@ function ResultsView({ result, columns, onDownload, onReport, onRowClick, onNew 
   return <>{result.history && <div className={result.history.saved?'success-note':'inline-alert'} role="status" style={{marginBottom:16}}>
     {result.history.saved?<><Link href="/my-files">Saved to My Files</Link>. Available until {new Date(result.history.expires_at!).toLocaleDateString()}.</>:result.history.warning}
     </div>}<SummaryMetrics summary={summary} />
+    {result.column_totals && <section className="panel" style={{marginBottom:20}}>
+      <div className="panel-head"><div><h2>GST Column Totals</h2><p className="subtext">{result.column_totals.worksheet} | {result.column_totals.included_rows.length} transaction rows</p></div></div>
+      <div className="panel-body"><div className="metric-grid">{Object.entries(result.column_totals.columns).filter(([key,item])=>key!=='cess'||item.source_column!==null).map(([key,item])=><div className="metric" key={key}>
+        <div className="metric-label">Total {item.label}</div><div className="metric-value" style={{fontSize:22}}>{item.total===null?'Unavailable':formatTotalCurrency(item.total)}</div>
+        <small>{item.blank_count} blank | {item.invalid_count} invalid</small>
+      </div>)}</div>
+      {result.column_totals.warnings.map(warning=><p className="inline-alert" role="status" key={warning}>{warning}</p>)}
+      {result.column_totals.issues.length>0 && <details><summary>Review excluded monetary cells ({result.column_totals.issues.length})</summary><ul>{result.column_totals.issues.map(issue=><li key={`${issue.row}-${issue.field}`}>Row {issue.row}, {issue.field.toUpperCase()}, column {issue.column}: {issue.message}</li>)}</ul></details>}
+      {result.column_totals.output && <p className="subtext">Workbook totals: {result.column_totals.output.worksheet}{result.column_totals.output.row?`, row ${result.column_totals.output.row}`:''}.</p>}
+      </div></section>}
+
     <section className="panel"><div className="panel-head"><div><h2>Processed rows</h2><p className="subtext" style={{ marginTop: 4 }}>{result.filename} Â· {result.worksheet}</p></div><div className="result-actions"><button className="btn btn-small" onClick={onNew}><Upload size={13} />Process another</button><button className="btn btn-small btn-primary" onClick={onDownload}><ArrowDownToLine size={13} />Download Updated Excel</button><button className="btn btn-small" onClick={onReport}><ArrowDownToLine size={13} />Verification report</button></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.rows} columns={columns} statusFilter onRowClick={onRowClick} emptyText="No invoice rows found." /></div></section>
   </>;
 }

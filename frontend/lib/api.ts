@@ -42,6 +42,7 @@ export async function inspectWorkbook(file: File): Promise<InspectResponse> {
 
 export type ProcessFields = {
   worksheet: string;
+  monetaryColumns?: Record<string, number | null>;
   firstDataRow: number;
   invoiceCol: number;
   taxableCol: number;
@@ -56,6 +57,7 @@ export async function processWorkbook(file: File, fields: ProcessFields): Promis
   const body = new FormData();
   body.append("file", file);
   body.append("worksheet", fields.worksheet);
+  if (fields.monetaryColumns) body.append("monetary_columns", JSON.stringify(fields.monetaryColumns));
   body.append("first_data_row", String(fields.firstDataRow));
   body.append("invoice_col", String(fields.invoiceCol));
   body.append("taxable_col", String(fields.taxableCol));

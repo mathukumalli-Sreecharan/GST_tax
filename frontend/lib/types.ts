@@ -15,6 +15,7 @@ export type SheetInfo = {
   detected: { invoice_col: number; invoice_header_row: number; taxable_col: number; taxable_header_row: number } | null;
   existing_rate: { column: number; header_row: number } | null;
   invoice_number: { column: number; header_row: number } | null;
+  monetary_detection?: {columns: Record<string, number | null>; candidates: Record<string, number[]>; warnings: string[]};
   columns: ColumnMeta[];
   preview: { excel_row: number; values: unknown[] }[];
 };
@@ -51,7 +52,18 @@ export type ResultRow = {
   rate_letter: string;
 };
 
+export type ColumnTotals = {
+  worksheet: string;
+  columns: Record<string, {label: string; source_column: number | null; total: string | null; blank_count: number; invalid_count: number}>;
+  included_rows: number[];
+  excluded_rows: {row: number; reason: string}[];
+  issues: {row: number; field: string; column: number; message: string}[];
+  warnings: string[];
+  output: {worksheet: string; mode: string; row?: number} | null;
+};
+
 export type ProcessResponse = {
+  column_totals?: ColumnTotals;
   history?: {saved: boolean; id?: string; expires_at?: string; warning?: string};
   file_id: string;
   filename: string;
