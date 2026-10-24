@@ -22,7 +22,7 @@ export function MyFiles(){
  async function download(file:GeneratedFile){setWorking(true);setError('');try{await downloadSavedFile(file.id,file.output_filename);}catch(e){setError(e instanceof Error?e.message:'Unable to download this file.');}finally{setWorking(false);}}
  async function remove(){if(!selected)return;setWorking(true);setError('');try{
   const result=await approvalApi<{queued:boolean;message?:string}>(`/files/${selected.id}`,{method:'DELETE'});
-  setNotice(result.queued?result.message||'Storage deletion queued.':'File deleted.');setSelected(null);
+  setNotice(result.queued?result.message||'File deletion is pending.':'File deleted.');setSelected(null);
   if(data?.files.length===1 && offset>0)setOffset(Math.max(0,offset-20));else await load();
  }catch(e){setError(e instanceof Error?e.message:'Unable to delete this file.');}finally{setWorking(false);}}
  return <div className="shell"><aside className={`sidebar ${sidebar?'open':''}`}><div className="brand"><span className="brand-mark"><FileSpreadsheet size={16}/></span><span>GST Ledger Studio</span></div><div className="nav-label">Workspace</div><nav className="nav-list"><Link className="nav-item" href="/">Dashboard</Link><Link className="nav-item active" href="/my-files">My Files</Link></nav><div className="local-note">Private beta · free access</div></aside>

@@ -45,7 +45,7 @@ export function AuthForm({mode, onSignedIn}:{mode:AuthMode; onSignedIn?:()=>void
  {mode!=='forgot-password' && <><label>Password<input name="password" type={show?'text':'password'} autoComplete={mode==='login'?'current-password':'new-password'} minLength={mode==='login'?1:12} maxLength={256} required/></label><button className="auth-text" type="button" aria-pressed={show} onClick={()=>setShow(!show)}>{show?'Hide':'Show'} password</button></>}
  {(mode==='register'||mode==='reset-password') && <label>Confirm password<input name="confirm" type={show?'text':'password'} autoComplete="new-password" required minLength={12} maxLength={256}/></label>}
  {error && <p role="alert" className="auth-error">{error}</p>}
- <button className="auth-submit" disabled={busy}>{busy?'Please wait?':mode==='login'?'Sign in':mode==='register'?'Create account':mode==='forgot-password'?'Send reset link':'Update password'}</button>
+ <button className="auth-submit" disabled={busy}>{busy?'Please wait…':mode==='login'?'Sign in':mode==='register'?'Create account':mode==='forgot-password'?'Send reset link':'Update password'}</button>
  </form>}
  <nav><Link href="/login">Sign in</Link><Link href="/register">Register</Link><Link href="/forgot-password">Forgot password?</Link></nav></div>;
 }

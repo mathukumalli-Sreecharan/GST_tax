@@ -7,7 +7,7 @@ export async function middleware(request: NextRequest) {
  const publicRoute = ['/login','/register','/forgot-password','/reset-password','/auth/callback'].includes(path);
  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
- if (!url || !key) return new NextResponse('Configure Supabase environment variables to use GST Ledger Studio.', {status:503});
+ if (!url || !key) return new NextResponse('The application is temporarily unavailable. Please try again shortly.', {status:503});
  const client = createServerClient(url,key,{cookies:{getAll:()=>request.cookies.getAll(),setAll(values){
   values.forEach(({name,value})=>request.cookies.set(name,value));
   response = NextResponse.next({request});
