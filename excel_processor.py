@@ -15,7 +15,7 @@ from openpyxl.utils.cell import range_boundaries
 
 from gst_calculator import calculate_rate
 from monetary_totals import aggregate, write_totals, header_at, TotalsConflict
-from workbook_preservation import validate_export
+from workbook_preservation import validate_export, preserve_numeric_cells
 
 
 class PreservationError(ValueError):
@@ -320,19 +320,25 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
         else:
             wb.save(destination)
             _restore_file_sharing(source_data, destination)
-        # Reopen the produced file to ensure its package and workbook structure are valid.
-        check = load_workbook(destination, read_only=False, data_only=False)
-        if check.sheetnames != wb.sheetnames or rate_col > check[sheet_name].max_column:
-            raise PreservationError("Export validation failed; output was removed.")
+        # Preserve source numeric precision before reopening, then verify every
+        # original cell normally. Numeric serialization loss is not a tolerated mismatch.
         baseline = load_workbook(BytesIO(source_data), read_only=False, data_only=False)
+        check = None
         try:
+            preserve_numeric_cells(source_data, destination, baseline, sheet_name,
+                                   None if existing_rate_col else rate_col, rate_col,
+                                   recalculate_existing, included_rows, totals)
+            check = load_workbook(destination, read_only=False, data_only=False)
+            if check.sheetnames != wb.sheetnames or rate_col > check[sheet_name].max_column:
+                raise PreservationError('Export validation failed; output was removed.')
             validate_export(baseline, check, wb, sheet_name, None if existing_rate_col else rate_col,
                             rate_col, recalculate_existing, included_rows, totals)
         except ValueError as exc:
             raise PreservationError(str(exc)) from exc
         finally:
             baseline.close()
-            check.close()
+            if check is not None:
+                check.close()
     except Exception:
         if destination.exists():
             destination.unlink()
