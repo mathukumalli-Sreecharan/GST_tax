@@ -114,15 +114,12 @@ def test_protected_selected_sheet_rejects_changes(tmp_path, existing, recalculat
     assert not (tmp_path / "output.xlsx").exists()
 
 
-def test_protected_sheet_can_keep_existing_rates_without_changes(tmp_path):
+def test_protected_sheet_refuses_mandatory_total_without_bypassing_protection(tmp_path):
     data = workbook_bytes(sheet_protected=True, existing=True)
-    output = tmp_path / "output.xlsx"
-    process_workbook(data, output, "Sheet", 1, 2, 1)
-    before, after = load_workbook(BytesIO(data)), load_workbook(output)
-    assert after.active.protection == before.active.protection
-    assert list(after.active.values) == list(before.active.values)
-    assert 'GST Totals Summary' in after.sheetnames
-    before.close(); after.close()
+    output = tmp_path / 'output.xlsx'
+    with pytest.raises(PreservationError, match='protected'):
+        process_workbook(data, output, 'Sheet', 1, 2, 1)
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("data,match", [

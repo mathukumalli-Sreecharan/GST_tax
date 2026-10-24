@@ -47,7 +47,7 @@ def test_detection_varied_positions_and_workbook_preservation(tmp_path):
     assert result["rate_col"] == 6
     out = load_workbook(output)
     ws = out["B2B"]
-    assert out.sheetnames == ["B2B", "Other", "GST Totals Summary"]
+    assert out.sheetnames == ["B2B", "Other"]
     assert ws["F3"].value == "Rate(%)"
     assert ws["F4"].value == 5 and ws["F5"].value == 18
     assert ws["F6"].value == 12 and ws["F7"].value == 28

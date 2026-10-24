@@ -14,7 +14,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
 
 from gst_calculator import calculate_rate
-from monetary_totals import aggregate, write_totals, header_at
+from monetary_totals import aggregate, write_totals, header_at, TotalsConflict
+from workbook_preservation import validate_export
 
 
 class PreservationError(ValueError):
@@ -62,13 +63,14 @@ def _restore_file_sharing(data, destination):
     ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     with ZipFile(BytesIO(data)) as original:
         sharing = ET.fromstring(original.read("xl/workbook.xml")).find(ns + "fileSharing")
-    if sharing is None:
-        return
+        core = original.read("docProps/core.xml") if "docProps/core.xml" in original.namelist() else None
     with ZipFile(destination) as saved:
         entries = [(entry, saved.read(entry.filename)) for entry in saved.infolist()]
     with ZipFile(destination, "w") as saved:
         for entry, content in entries:
-            if entry.filename == "xl/workbook.xml":
+            if entry.filename == "docProps/core.xml" and core is not None:
+                content = core
+            if entry.filename == "xl/workbook.xml" and sharing is not None:
                 root = ET.fromstring(content)
                 root.insert(1 if root.find(ns + "fileVersion") is not None else 0, sharing)
                 content = ET.tostring(root, encoding="utf-8")
@@ -79,10 +81,10 @@ def _norm(value):
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
-def detect_columns(ws, scan_rows=40):
+def detect_columns(ws, scan_rows=None):
     """Find likely header cells anywhere near the top, including multirow headers."""
     candidates = {"invoice": [], "taxable": []}
-    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, scan_rows)):
+    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, scan_rows) if scan_rows is not None else ws.max_row):
         for cell in row:
             text = _norm(cell.value)
             if header_at(ws, cell) == "invoice":
@@ -108,9 +110,9 @@ def detect_columns(ws, scan_rows=40):
             "taxable_col": tax[1], "taxable_header_row": tax[0]}
 
 
-def detect_rate_column(ws, scan_rows=40):
+def detect_rate_column(ws, scan_rows=None):
     """Return the existing Rate(%) header location, if any."""
-    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, scan_rows)):
+    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, scan_rows) if scan_rows is not None else ws.max_row):
         for cell in row:
             if _norm(cell.value) in {"rate", "rate percent"}:
                 return cell.column, cell.row
@@ -174,6 +176,9 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
     invoice_header_row = invoice_header_row or header_row
     taxable_header_row = taxable_header_row or header_row
     detected_rate = detect_rate_column(ws)
+    if existing_rate_col and (not detected_rate or existing_rate_col != detected_rate[0]):
+        wb.close()
+        raise PreservationError('The selected existing rate column does not have a detected Rate (%) header; no original column was overwritten.')
     existing_rate_col = existing_rate_col or (detected_rate[0] if detected_rate else None)
     if ws.protection.sheet and (not existing_rate_col or recalculate_existing):
         wb.close()
@@ -189,8 +194,22 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
     if not existing_rate_col:
         # OpenPyXL does not shift merged ranges when inserting columns. Rebuild them
         # explicitly so the surrounding title/layout remains intact.
+        if ws.data_validations.count or ws.conditional_formatting:
+            wb.close()
+            raise PreservationError('Data validation or conditional formatting references cannot be safely shifted for an inserted rate column. Use a workbook with an existing Rate (%) column or an authorized simplified copy.')
+        for name in wb.defined_names.values():
+            if not name.name.startswith('_GST_LEDGER_'):
+                wb.close()
+                raise PreservationError('Named references cannot be safely shifted for an inserted rate column. Use an existing Rate (%) column or review the workbook.')
         merged = list(ws.merged_cells.ranges)
+        saved_styles = {(cell.row, cell.column): copy(cell._style) for cell in ws._cells.values() if cell.has_style}
+        freeze = ws.freeze_panes
+        print_area = list(ws._print_area.ranges) if ws.print_area else []
+        print_columns = ws.print_title_cols
         column_dimensions = [copy(dimension) for dimension in ws.column_dimensions.values()]
+        taxable_width = next((dimension.width for dimension in column_dimensions
+                              if dimension.min <= taxable_col <= dimension.max),
+                             ws.sheet_format.defaultColWidth or 13)
         filter_ref = ws.auto_filter.ref
         for merged_range in merged:
             ws.unmerge_cells(str(merged_range))
@@ -227,6 +246,35 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
             elif max_col >= rate_col:
                 max_col += 1
             ws.merge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
+        # Re-merging can redistribute borders; restore every original styled cell.
+        for (row, col), style in saved_styles.items():
+            ws.cell(row, col + (col >= rate_col))._style = style
+        if freeze:
+            from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
+            letter, number = coordinate_from_string(freeze)
+            column = column_index_from_string(letter)
+            shifted_column = column + (column >= rate_col)
+            ws.sheet_view.pane.topLeftCell = f'{get_column_letter(shifted_column)}{number}'
+            if shifted_column != column:
+                ws.sheet_view.pane.xSplit = shifted_column - 1
+        if print_area:
+            shifted = []
+            for area in print_area:
+                first, top, last, bottom = area.bounds
+                shifted.append(f'{get_column_letter(first + (first >= rate_col))}{top}:{get_column_letter(last + (last >= rate_col))}{bottom}')
+            ws.print_area = shifted
+        if print_columns:
+            from openpyxl.utils.cell import column_index_from_string
+            first, last = [column_index_from_string(part.replace('$', '')) for part in print_columns.split(':')]
+            ws.print_title_cols = f'{get_column_letter(first + (first >= rate_col))}:{get_column_letter(last + (last >= rate_col))}'
+        for cell in ws._cells.values():
+            if cell.hyperlink:
+                cell.hyperlink.ref = cell.coordinate
+        from openpyxl.cell.cell import MergedCell
+        if isinstance(ws.cell(taxable_header_row, rate_col), MergedCell) or any(
+                isinstance(ws.cell(row, rate_col), MergedCell) for row in included_rows):
+            wb.close()
+            raise PreservationError('The rate column intersects a merged header or transaction cell. No source data was overwritten.')
         ws.cell(taxable_header_row, rate_col).value = "Rate(%)"
         source_style = ws.cell(taxable_header_row, taxable_col)
         target = ws.cell(taxable_header_row, rate_col)
@@ -235,13 +283,16 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
         if source_style.number_format:
             target.number_format = source_style.number_format
         # Match the new field's width to the taxable value column.
-        old_letter = get_column_letter(taxable_col)
-        new_dimension = ws.column_dimensions[rate_letter]
-        if ws.column_dimensions[old_letter].width is not None:
-            new_dimension.width = ws.column_dimensions[old_letter].width
+        # Looking up an absent dimension key creates a default-width override,
+        # which can hide an existing grouped column's width. Use the source range.
+        ws.column_dimensions[rate_letter].width = taxable_width
     if not existing_rate_col and invoice_col >= rate_col:
         invoice_col += 1
-    totals_changed = write_totals(wb, ws, totals, rate_col if not existing_rate_col else None)
+    try:
+        totals_changed = write_totals(wb, ws, totals, rate_col if not existing_rate_col else None)
+    except TotalsConflict as exc:
+        wb.close()
+        raise PreservationError(str(exc)) from exc
     summary = {5: 0, 12: 0, 18: 0, 28: 0, "unmatched": 0}
     flagged = []
     inv_header = _cell_header(ws, invoice_col, invoice_header_row)
@@ -273,7 +324,15 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
         check = load_workbook(destination, read_only=False, data_only=False)
         if check.sheetnames != wb.sheetnames or rate_col > check[sheet_name].max_column:
             raise PreservationError("Export validation failed; output was removed.")
-        check.close()
+        baseline = load_workbook(BytesIO(source_data), read_only=False, data_only=False)
+        try:
+            validate_export(baseline, check, wb, sheet_name, None if existing_rate_col else rate_col,
+                            rate_col, recalculate_existing, included_rows, totals)
+        except ValueError as exc:
+            raise PreservationError(str(exc)) from exc
+        finally:
+            baseline.close()
+            check.close()
     except Exception:
         if destination.exists():
             destination.unlink()

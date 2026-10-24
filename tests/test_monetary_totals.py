@@ -119,6 +119,7 @@ def test_missing_ambiguous_and_manual_columns():
 
 def test_total_subtotal_and_repeated_headers_are_excluded_and_reprocessing_is_stable(tmp_path):
     wb,ws,header,keys=fixture_workbook()
+    ws.append([])  # Leave a safe total destination; retain existing totals below it.
     ws.append(['Subtotal',999,999,999,999,999,999])
     ws.append(['Invoice Number','Invoice Value','Taxable Value','IGST','CGST','SGST','Cess'])
     ws.append(['GRAND TOTAL',9999,9999,9999,9999,9999,9999])
@@ -126,14 +127,13 @@ def test_total_subtotal_and_repeated_headers_are_excluded_and_reprocessing_is_st
     totals=result['column_totals']
     assert totals['columns']['invoice']['total']=='106.31'
     assert len(totals['excluded_rows'])==3
-    assert totals['output']['mode']=='summary_sheet'
+    assert totals['output']['mode']=='grand_total_row'
     replay=tmp_path/'replay.xlsx'
     again=process_workbook(out,replay,'B2B',2,3,1)
     assert {k:v['total'] for k,v in again['column_totals']['columns'].items()}=={k:v['total'] for k,v in totals['columns'].items()}
     original,repeat=load_workbook(out),load_workbook(replay)
     assert repeat.sheetnames==original.sheetnames
     assert list(repeat['B2B'].values)==list(original['B2B'].values)
-    assert list(repeat['GST Totals Summary'].values)==list(original['GST Totals Summary'].values)
     original.close();repeat.close()
 
 
@@ -155,8 +155,8 @@ def test_protected_structure_fallback_does_not_bypass_security(tmp_path):
     wb,ws,header,keys=fixture_workbook(multirow=True)
     wb.security.lockStructure=True
     result,out=run(wb,ws,header,keys,tmp_path)
-    assert result['column_totals']['output'] is None
-    assert any('protected' in warning for warning in result['column_totals']['warnings'])
+    assert result['column_totals']['output']['worksheet']==ws.title
+    assert result['column_totals']['output']['mode']=='grand_total_row'
     loaded=load_workbook(out); assert loaded.security.lockStructure
     assert loaded.sheetnames==['B2B','Reference'];loaded.close()
 
@@ -167,7 +167,8 @@ def test_existing_summary_name_is_not_overwritten(tmp_path):
     result,out=run(wb,ws,header,keys,tmp_path)
     loaded=load_workbook(out)
     assert loaded['GST Totals Summary']['A1'].value=='User content'
-    assert result['column_totals']['output']['worksheet']=='GST Totals Summary 2'
+    assert result['column_totals']['output']['worksheet']==ws.title
+    assert loaded.sheetnames==wb.sheetnames
     loaded.close()
 
 
@@ -255,6 +256,7 @@ def test_vertically_split_headers_and_currency_units_are_not_transaction_rows(tm
         ws.cell(2,col,'Value' if col<=2 else 'Tax' if col<=5 else 'Amount')
         ws.cell(3,col,'INR')
     ws.append([118,100,18,0,0,1])
+    ws.append([])
     ws.append(['Invoice','Taxable','Integrated','Central','State/UT','Cess'])
     ws.append(['Value','Value','Tax','Tax','Tax','Amount'])
     ws.append(['INR']*6)
