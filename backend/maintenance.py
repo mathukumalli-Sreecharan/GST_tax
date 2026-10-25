@@ -29,6 +29,8 @@ def main():
     load_dotenv()
     validate_production_config()
     result = cleanup_expired_files()
+    from backend.review_store import durable, cleanup_reviews
+    if durable():cleanup_reviews()
     sent = deliver_notifications(limit=50)
     print(f"Maintenance: {result['removed']} files removed, {result['deferred']} deferred; {sent} emails accepted.")
     if result["deferred"]:

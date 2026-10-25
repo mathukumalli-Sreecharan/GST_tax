@@ -1,3 +1,4 @@
+from review_helpers import reviewed_post
 from pathlib import Path
 from io import BytesIO
 
@@ -30,7 +31,7 @@ def test_cors_origins_are_trimmed_and_normalized():
 def test_inspect_and_process_regression_workbook():
     source = Path("KKENGIN APRIL-26.xlsx")
     if not source.exists():
-        return
+        pytest.skip("Optional real workbook fixture KKENGIN APRIL-26.xlsx is unavailable")
     data = source.read_bytes()
     inspected = client.post("/api/excel/inspect", files={"file": (source.name, data,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
@@ -41,7 +42,7 @@ def test_inspect_and_process_regression_workbook():
     assert sheet["detected"]["invoice_col"] == 6
     assert sheet["detected"]["taxable_col"] == 9
 
-    processed = client.post("/api/excel/process", files={"file": (source.name, data,
+    processed = reviewed_post(client,"/api/excel/process", files={"file": (source.name, data,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, data={
             "worksheet": "B2B", "first_data_row": "7", "invoice_col": "6", "taxable_col": "9",
             "invoice_number_col": "3", "invoice_header_row": "6", "taxable_header_row": "5",
@@ -97,7 +98,7 @@ def test_api_reports_all_four_rates_and_exports_rate_column():
     stream = BytesIO()
     workbook.save(stream)
 
-    response = client.post("/api/excel/process", files={"file": ("four-rates.xlsx", stream.getvalue(),
+    response = reviewed_post(client,"/api/excel/process", files={"file": ("four-rates.xlsx", stream.getvalue(),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, data={
             "worksheet": "Invoices", "first_data_row": "2", "invoice_col": "1", "taxable_col": "2",
             "invoice_header_row": "1", "taxable_header_row": "1",
@@ -130,7 +131,7 @@ def test_api_rate_summary_includes_zero_counts():
     sheet.append([105, 100])
     stream = BytesIO()
     workbook.save(stream)
-    response = client.post("/api/excel/process", files={"file": ("one-rate.xlsx", stream.getvalue(),
+    response = reviewed_post(client,"/api/excel/process", files={"file": ("one-rate.xlsx", stream.getvalue(),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, data={
             "worksheet": "Sheet", "first_data_row": "2", "invoice_col": "1", "taxable_col": "2",
             "invoice_header_row": "1", "taxable_header_row": "1",
@@ -147,26 +148,26 @@ def test_api_rejects_non_xlsx_upload():
 def test_existing_rate_column_requires_confirmation_and_is_reused():
     source = Path("updated_KK MAY.xlsx")
     if not source.exists():
-        return
+        pytest.skip("Optional real workbook fixture updated_KK MAY.xlsx is unavailable")
     content = source.read_bytes()
     upload = {"file": (source.name, content,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     base_fields = {"worksheet": "B2B", "first_data_row": "7", "invoice_col": "6", "taxable_col": "9",
                    "invoice_number_col": "3", "invoice_header_row": "6", "taxable_header_row": "5"}
 
-    refused = client.post("/api/excel/process", files=upload,
+    refused = reviewed_post(client,"/api/excel/process", files=upload,
                           data={**base_fields, "recalculate_existing": "true", "confirm_overwrite": "false"})
     assert refused.status_code == 400
     assert "Confirm overwrite" in refused.json()["detail"]
 
-    kept = client.post("/api/excel/process", files=upload, data=base_fields)
+    kept = reviewed_post(client,"/api/excel/process", files=upload, data=base_fields)
     assert kept.status_code == 200, kept.text
     keep_result = kept.json()
     assert keep_result["rate_column"] == {"letter": "J", "index": 10}
     kept_download = client.get(f"/api/excel/download/{keep_result['file_id']}")
     assert kept_download.content == content
 
-    confirmed = client.post("/api/excel/process", files=upload,
+    confirmed = reviewed_post(client,"/api/excel/process", files=upload,
                             data={**base_fields, "recalculate_existing": "true", "confirm_overwrite": "true"})
     assert confirmed.status_code == 200, confirmed.text
     confirmed_result = confirmed.json()

@@ -36,6 +36,10 @@ def calculate_rate(invoice_value: Any, taxable_value: Any) -> RateResult:
         if taxable is None:
             missing.append("Taxable Value is missing or invalid")
         return RateResult(None, None, True, "; ".join(missing))
+    # Signed credits use the same magnitude-based matching and tolerances.
+    # The original cells are never changed; mixed signs remain invalid.
+    if invoice < 0 and taxable < 0:
+        invoice, taxable = -invoice, -taxable
     if invoice <= 0 or taxable <= 0:
         invalid = []
         if invoice <= 0:

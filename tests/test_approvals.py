@@ -1,3 +1,4 @@
+from review_helpers import reviewed_post
 from copy import deepcopy
 from io import BytesIO
 import json
@@ -78,7 +79,7 @@ def test_approval_endpoint_pending_and_unverified(access):
 def test_approved_processing_then_revocation_and_cross_user_download(access):
     client, state, _ = access
     state['status'] = 'approved'
-    response = client.post('/api/excel/process', files=upload(), data={
+    response = reviewed_post(client,'/api/excel/process', files=upload(), data={
         'worksheet':'Sheet', 'first_data_row':2, 'invoice_col':1, 'taxable_col':2})
     assert response.status_code == 200, response.text
     result = response.json()

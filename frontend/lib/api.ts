@@ -1,5 +1,5 @@
 import { browserClient } from "@/lib/supabase/browser";
-import type { InspectResponse, ProcessResponse } from "@/lib/types";
+import type { InspectResponse, ReviewSession } from "@/lib/types";
 
 const base = (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000").replace(/\/+$/, "");
 
@@ -53,7 +53,7 @@ export type ProcessFields = {
   confirmOverwrite: boolean;
 };
 
-export async function processWorkbook(file: File, fields: ProcessFields): Promise<ProcessResponse> {
+export async function processWorkbook(file: File, fields: ProcessFields): Promise<ReviewSession> {
   const body = new FormData();
   body.append("file", file);
   body.append("worksheet", fields.worksheet);
@@ -66,11 +66,11 @@ export async function processWorkbook(file: File, fields: ProcessFields): Promis
   body.append("taxable_header_row", String(fields.taxableHeaderRow));
   body.append("recalculate_existing", String(fields.recalculateExisting));
   body.append("confirm_overwrite", String(fields.confirmOverwrite));
-  return check<ProcessResponse>(await authenticatedFetch(`${base}/api/excel/process`, { method: "POST", body }));
+  return check<ReviewSession>(await authenticatedFetch(`${base}/api/excel/process`, { method: "POST", body }));
 }
 
-export async function downloadResult(fileId: string, kind: "download" | "report", filename: string): Promise<void> {
-  const response = await authenticatedFetch(`${base}/api/excel/${kind}/${encodeURIComponent(fileId)}`);
+export async function downloadResult(fileId: string, kind: "download" | "report", filename: string, reviewId?: string): Promise<void> {
+  const response = await authenticatedFetch(reviewId ? `${base}/api/excel/reviews/${encodeURIComponent(reviewId)}/${kind}` : `${base}/api/excel/${kind}/${encodeURIComponent(fileId)}`);
   return saveDownload(response, filename);
 }
 

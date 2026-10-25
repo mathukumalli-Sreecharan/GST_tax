@@ -39,7 +39,7 @@ export function DataTable<T extends object>({ rows, columns, onRowClick, statusF
       {statusFilter && <select aria-label="Filter by verification status" className="search" value={status}
         onChange={(event) => setStatus(event.target.value)} style={{ minWidth: 155 }}>
         <option value="ALL">All statuses</option><option>MATCHED</option><option>REVIEW REQUIRED</option>
-        <option>UNMATCHED</option><option>INVALID</option><option>AMBIGUOUS</option>
+        <option>REVIEW_REQUIRED</option><option>UNRESOLVED</option><option>UNMATCHED</option><option>INVALID</option><option>AMBIGUOUS</option>
       </select>}
       <span style={{ color: "#64748b", fontSize: 10 }}>{allCount.toLocaleString()} records</span>
     </div>

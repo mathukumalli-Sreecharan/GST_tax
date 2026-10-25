@@ -1,3 +1,4 @@
+from review_helpers import reviewed_post
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
@@ -78,7 +79,7 @@ def process(client, filename='private-audit.xlsx'):
     wb=Workbook();ws=wb.active;ws.append(['Invoice Value','Taxable Value'])
     for rate in (5,12,18,28):ws.append([100+rate,100])
     stream=BytesIO();wb.save(stream);wb.close()
-    response=client.post('/api/excel/process',files={'file':(filename,stream.getvalue())},data={
+    response=reviewed_post(client,'/api/excel/process',files={'file':(filename,stream.getvalue())},data={
         'worksheet':'Sheet','first_data_row':2,'invoice_col':1,'taxable_col':2})
     assert response.status_code==200,response.text
     return response.json()

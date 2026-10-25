@@ -1,3 +1,4 @@
+from review_helpers import reviewed_post
 import time
 from io import BytesIO
 from unittest.mock import patch
@@ -58,7 +59,7 @@ def test_cross_user_download_and_report():
     app.dependency_overrides[require_authenticated_user]=lambda:"owner"
     app.dependency_overrides[require_approved_user]=lambda:"owner"
     try:
-        response=client.post("/api/excel/process",files={"file":("test.xlsx",stream.getvalue())},data={"worksheet":"Sheet","first_data_row":2,"invoice_col":1,"taxable_col":2})
+        response=reviewed_post(client,"/api/excel/process",files={"file":("test.xlsx",stream.getvalue())},data={"worksheet":"Sheet","first_data_row":2,"invoice_col":1,"taxable_col":2})
         assert response.status_code == 200, response.text
         file_id=response.json()["file_id"]
         for kind in ["download","report"]:

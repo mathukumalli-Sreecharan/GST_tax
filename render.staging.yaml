@@ -1,0 +1,35 @@
+# DRAFT: new staging web service only. Never attach this to the production Blueprint.
+# Dashboard setup is described in PHASE6_STAGING_SETUP.md. Do not apply automatically.
+# The reviewed local source must first be available through an approved deployment source.
+services:
+  - type: web
+    name: gst-ledger-api-staging
+    runtime: python
+    plan: free
+    autoDeployTrigger: "off"
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: REVIEW_BACKEND
+        value: supabase
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: SUPABASE_URL
+        value: https://fjncaelbsxwuncjcfgch.supabase.co
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+# Deliberately no production environment group, Resend keys, cleanup secrets,
+# database creation, migration command, existing service, or paid cron resource.
+# Independent review cleanup already runs in staging Supabase.
+# My Files cleanup requires its own staging maintenance plan; see the guide.

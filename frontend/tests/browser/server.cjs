@@ -8,9 +8,15 @@ async function main(){
   '@/lib/supabase/browser':path.resolve('tests/browser/auth-mock.mjs'),
   'next/link':path.resolve('tests/browser/link-mock.jsx')
  };
- await esbuild.build({entryPoints:['tests/browser/harness.jsx'],bundle:true,outfile:'.beta-browser/app.js',platform:'browser',jsx:'automatic',define:{'process.env.NODE_ENV':'"test"'},plugins:[{name:'test-only-adapters',setup(build){build.onResolve({filter:/^(?:@\/lib\/(?:api|supabase\/browser)|next\/link)$/},args=>({path:mocks[args.path]}));}}]});
+ const audit=process.env.GST_AUDIT_REAL_API==='1';
+ if(audit){mocks['@/lib/api']=path.resolve('lib/api.ts');mocks['@/lib/supabase/browser']=path.resolve('tests/audit/auth-mock.mjs');}
+ await esbuild.build({entryPoints:['tests/browser/harness.jsx'],bundle:true,outfile:'.beta-browser/app.js',platform:'browser',jsx:'automatic',define:{'process.env.NODE_ENV':'"test"','process.env.NEXT_PUBLIC_API_BASE':'"http://127.0.0.1:3199"'},plugins:[{name:'test-only-adapters',setup(build){build.onResolve({filter:/^(?:@\/lib\/(?:api|supabase\/browser)|next\/link)$/},args=>({path:mocks[args.path]}));}}]});
  const css=fs.readFileSync('app/globals.css','utf8').replace('@import "tailwindcss";','');
  const server=http.createServer((req,res)=>{
+  if(audit&&(req.url.startsWith('/api/')||req.url.startsWith('/__audit/'))){
+   const proxy=http.request({hostname:'127.0.0.1',port:3198,path:req.url,method:req.method,headers:req.headers},response=>{res.writeHead(response.statusCode,response.headers);response.pipe(res);});
+   proxy.on('error',()=>{res.writeHead(502);res.end('Local audit backend unavailable');});req.pipe(proxy);return;
+  }
   if(req.url==='/__shutdown'){res.end('bye');setTimeout(()=>{server.close();process.exit(0);},50);return;}
   if(req.url==='/app.js'){res.setHeader('Content-Type','text/javascript');res.end(fs.readFileSync('.beta-browser/app.js'));return;}
   if(req.url==='/app.css'){res.setHeader('Content-Type','text/css');res.end(css);return;}

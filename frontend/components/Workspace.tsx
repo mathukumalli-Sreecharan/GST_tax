@@ -10,10 +10,11 @@ import {
   CircleHelp, FileSpreadsheet, FileWarning, Gauge, Menu, RotateCw, Settings2,
   ShieldCheck, Upload, X,
 } from "lucide-react";
+import { TransactionReview } from "@/components/TransactionReview";
 import { DataTable } from "@/components/DataTable";
 import Link from 'next/link';
 import { downloadResult, inspectWorkbook, processWorkbook } from "@/lib/api";
-import type { ColumnMeta, InspectResponse, ProcessResponse, ResultRow, SheetInfo } from "@/lib/types";
+import type { ColumnMeta, InspectResponse, ProcessResponse, ResultRow, SheetInfo, ReviewSession } from "@/lib/types";
 
 type PageName = "Dashboard" | "Process Excel" | "Verification" | "Settings";
 const pages: { name: PageName; icon: typeof Gauge }[] = [
@@ -99,6 +100,7 @@ export default function Home() {
     window.setTimeout(() => setIntroSequence(false), 2600);
   }, []);
 
+  const [review, setReview] = useState<ReviewSession | null>(null);
   const [monetaryColumns, setMonetaryColumns] = useState<Record<string, number | null>>({});
   const activeSheet: SheetInfo | undefined = inspection?.sheets.find((sheet) => sheet.name === sheetName);
   const mappingForm = useForm<MappingValues>({ resolver: zodResolver(mappingSchema), defaultValues: { invoiceCol: 1, taxableCol: 2 } });
@@ -109,7 +111,7 @@ export default function Home() {
 
   const selectFile = async (newFile: File | undefined) => {
     if (!newFile) return;
-    setError(""); setSuccess(""); setInspection(null); setResult(null); setStage(0); setFile(newFile);
+    setError(""); setSuccess(""); setInspection(null); setResult(null); setReview(null); setStage(0); setFile(newFile);
     if (!newFile.name.toLowerCase().endsWith(".xlsx")) { setError("Choose an .xlsx workbook. Other formats are not supported."); return; }
     if (newFile.size > sizeLimit) { setError("The workbook exceeds the 20 MB upload limit."); return; }
     setBusy(true);
@@ -156,8 +158,8 @@ export default function Home() {
         taxableHeaderRow: activeSheet.detected?.taxable_header_row ?? firstDataRow - 1,
         recalculateExisting: Boolean(activeSheet.existing_rate && rateAction === "recalculate"),
         confirmOverwrite });
-      setResult(processed); setRecentFile(file.name); setStage(3); setPage("Process Excel");
-      setSuccess("GST rate calculation completed. Review flagged rows before filing.");
+      setResult(null); setReview(processed); setRecentFile(file.name); setStage(3); setPage("Process Excel");
+      setSuccess("Analysis completed. Review transactions before generating Excel.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Processing failed. Check the workbook and try again."); setStage(1); }
     finally { setBusy(false); }
   };
@@ -165,7 +167,7 @@ export default function Home() {
   const triggerDownload = async (kind: "download" | "report") => {
     if (!result) return;
     try {
-      await downloadResult(result.file_id, kind, kind === "download" ? result.filename : `verification_${file?.name.replace(/\.xlsx$/i, "") ?? "report"}.csv`);
+      await downloadResult(result.file_id, kind, kind === "download" ? result.filename : `verification_${file?.name.replace(/\.xlsx$/i, "") ?? "report"}.csv`, result.review_download_id);
       setSuccess(kind === "download" ? "Updated Excel downloaded successfully." : "Verification report downloaded successfully.");
     } catch (cause) { setSuccess(""); setError(cause instanceof Error ? cause.message : "Download failed."); }
   };
@@ -285,7 +287,7 @@ export default function Home() {
     {inspection?.source_info?.read_only_detected && <div role="status" className="inline-alert" style={{ marginBottom: 12 }}>Read-only source detected. Your original file will remain unchanged. The updated workbook will be generated as a separate file.</div>}
     {error && <div role="alert" className="inline-error" style={{ marginBottom: 12, display: "flex", gap: 8 }}><AlertCircle size={14} />{error}</div>}
     {success && stage === 3 && <div className="success-note" style={{ marginBottom: 12 }}>{success}</div>}
-    {stage === 0 && <section className="panel"><div className="panel-head"><div><h2>Upload workbook</h2></div></div><div className="panel-body">{uploadArea}{busy && <div className="loading"><span className="spinner" />Reading workbook…</div>}{file && !busy && <div className="success-note" style={{ marginTop: 10 }}>{file.name} · {(file.size / 1024).toFixed(1)} KB</div>}</div></section>}
+    {stage === 0 && <><TransactionReview onUpdate={setReview} onResume={()=>{setResult(null);setStage(3);}} onGenerated={setResult} /> <section className="panel"><div className="panel-head"><div><h2>Upload workbook</h2></div></div><div className="panel-body">{uploadArea}{busy && <div className="loading"><span className="spinner" />Reading workbook…</div>}{file && !busy && <div className="success-note" style={{ marginTop: 10 }}>{file.name} · {(file.size / 1024).toFixed(1)} KB</div>}</div></section></>}
     {stage === 1 && <><div className="panel" style={{ marginBottom: 12 }}><div className="panel-head"><div><h2>Review column mapping</h2><p className="subtext" style={{ marginTop: 4 }}>{file?.name} · {((file?.size ?? 0) / 1024).toLocaleString()} KB</p></div><button className="btn btn-small" onClick={() => { setStage(0); setError(""); }}><RotateCw size={13} />Change file</button></div><div className="panel-body">{mappingView}<div className="result-actions" style={{ justifyContent: "flex-end", marginTop: 14 }}><button className="btn btn-primary" onClick={() => { const validation = mappingSchema.safeParse({ invoiceCol, taxableCol }); if (!validation.success) setError(validation.error.issues[0]?.message ?? "Select valid columns."); else { setError(""); setStage(2); } }}>Continue to processing<ArrowRight size={14} /></button></div></div></div></>}
     {stage === 2 && <div className="panel"><div className="panel-head"><div><h2>Calculate GST rates</h2><p className="subtext" style={{ marginTop: 4 }}>Compare each row against supported 5%, 12%, 18%, and 28% GST rates.</p></div></div><div className="panel-body">
       <div className="mapping-row"><strong>Workbook</strong><span className="code-ref">{sheetName}</span><span>{file?.name}</span></div>
@@ -294,7 +296,8 @@ export default function Home() {
       {activeSheet?.existing_rate && rateAction === "recalculate" && !confirmOverwrite && <div className="inline-alert" style={{ marginTop: 12 }}>Confirm overwrite in Column Mapping before recalculating existing rates.</div>}
       {busy ? <div className="loading"><span className="spinner" />Processing workbook…</div> : <div className="result-actions" style={{ marginTop: 18 }}><button className="btn" onClick={() => setStage(1)}>Back to mapping</button><button className="btn btn-primary" onClick={() => void doProcess()} disabled={!file || !activeSheet || (Boolean(activeSheet.existing_rate && rateAction === "recalculate") && !confirmOverwrite)}><BadgeCheck size={14} />Calculate GST Rates</button></div>}
     </div></div>}
-    {stage === 3 && result && <ResultsView result={result} columns={resultColumns} onDownload={() => void triggerDownload("download")} onReport={() => void triggerDownload("report")} onRowClick={(row) => { setSelectedVerification(row); navigate("Verification"); }} onNew={() => { setStage(0); setFile(null); setInspection(null); setPage("Process Excel"); setSuccess(""); }} />}
+    {stage === 3 && review && !result && <TransactionReview initial={review} onUpdate={setReview} onGenerated={setResult} />}
+    {stage === 3 && result && <ResultsView result={result} columns={resultColumns} onDownload={() => void triggerDownload("download")} onReport={() => void triggerDownload("report")} onRowClick={(row) => { setSelectedVerification(row); navigate("Verification"); }} onNew={() => { setStage(0); setResult(null); setReview(null); setFile(null); setInspection(null); setPage("Process Excel"); setSuccess(""); }} />}
   </>;
 
   const dashboard = () => <>
@@ -307,7 +310,7 @@ export default function Home() {
 
   const verification = () => <>
     <div className="page-head"><div><div className="eyebrow">EXCEPTION REVIEW</div><h1>Verification</h1><p className="subtext">Review flagged rows and check the original workbook references.</p></div><span className="status REVIEW_REQUIRED">{result?.verification.length ?? 0} FLAGGED</span></div>
-    {!result ? <div className="empty-state"><CircleHelp size={22} className="empty-icon" /><h2>No verification session</h2><p className="subtext" style={{ margin: "6px 0 14px" }}>Process a workbook to see flagged rows here.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}>Open processing workspace</button></div> : <div className="detail-layout"><section className="panel"><div className="panel-head"><div><h2>Flagged workbook rows</h2><p className="subtext" style={{ marginTop: 4 }}>Select a row to inspect rate comparison details.</p></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.verification} columns={verificationColumns} statusFilter onRowClick={setSelectedVerification} emptyText="No verification warnings." /></div></section>
+    {review ? <TransactionReview initial={review} onUpdate={setReview} onGenerated={setResult} /> : !result ? <div className="empty-state"><CircleHelp size={22} className="empty-icon" /><h2>No verification session</h2><p className="subtext" style={{ margin: "6px 0 14px" }}>Process a workbook to see flagged rows here.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}>Open processing workspace</button></div> : <div className="detail-layout"><section className="panel"><div className="panel-head"><div><h2>Flagged workbook rows</h2><p className="subtext" style={{ marginTop: 4 }}>Select a row to inspect rate comparison details.</p></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.verification} columns={verificationColumns} statusFilter onRowClick={setSelectedVerification} emptyText="No verification warnings." /></div></section>
       {selectedVerification && <aside className="panel detail-panel"><div className="panel-head"><div><h2>Row {selectedVerification.excel_row} details</h2><p className="subtext" style={{ marginTop: 4 }}>{selectedVerification.invoice_number || "Invoice number unavailable"}</p></div><button className="btn btn-small" aria-label="Close row details" onClick={() => setSelectedVerification(null)}><X size={13} /></button></div><div className="panel-body"><div style={{ marginBottom: 12 }}><Status status={selectedVerification.status} /></div><div className="detail-list">
         <Detail label="Worksheet" value={result.worksheet} /><Detail label="Actual Excel row" value={String(selectedVerification.excel_row)} />
         <Detail label="Invoice Value" value={formatDifference(selectedVerification.invoice_value)} />
@@ -348,7 +351,7 @@ function SummaryMetrics({ summary }: { summary: ProcessResponse["summary"] }) {
     {metric("Invoices processed", summary.total, "Rows with source values")}
     {metric("Exact GST matches", summary.matched, "Below ₹1 difference", "#24744c")}
     {supportedRates.map((rate) => metric(`${rate}% GST records`, rateCount(summary, rate), "Assigned rate"))}
-    {metric("Verification required", summary.review_required, "Review flagged records", "#946200")}
+    {metric(summary.review_complete ? "Reviewed calculation warnings" : "Verification required", summary.review_required, "Calculation checks", "#946200")}
     {metric("Unmatched records", summary.unmatched, "No rate assigned", "#9c3434")}
   </div>;
 }
@@ -371,6 +374,7 @@ function ResultsView({ result, columns, onDownload, onReport, onRowClick, onNew 
         <div className="metric-label">Total {item.label}</div><div className="metric-value" style={{fontSize:22}}>{item.total===null?'Unavailable':formatTotalCurrency(item.total)}</div>
         <small>{item.blank_count} blank | {item.invalid_count} invalid</small>
       </div>)}</div>
+      {result.summary.review_complete&&result.summary.rate_counts&&<details><summary>Verified output rate counts</summary><ul>{Object.entries(result.summary.rate_counts).filter(([,count])=>count>0).map(([rate,count])=><li key={rate}>{rate}%: {count} output rows</li>)}</ul></details>}
       {result.column_totals.warnings.map(warning=><p className="inline-alert" role="status" key={warning}>{warning}</p>)}
       {result.column_totals.issues.length>0 && <details><summary>Review excluded monetary cells ({result.column_totals.issues.length})</summary><ul>{result.column_totals.issues.map(issue=><li key={`${issue.row}-${issue.field}`}>Row {issue.row}, {issue.field.toUpperCase()}, column {issue.column}: {issue.message}</li>)}</ul></details>}
       {result.column_totals.output && <p className="subtext">Workbook totals: {result.column_totals.output.worksheet}{result.column_totals.output.row?`, row ${result.column_totals.output.row}`:''}.</p>}

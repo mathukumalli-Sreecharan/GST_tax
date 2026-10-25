@@ -1,3 +1,4 @@
+from review_helpers import reviewed_post
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -16,7 +17,7 @@ from backend.approvals import require_approved_user
 
 def fixture_workbook(order=None, multirow=False):
     keys = order or ['invoice', 'taxable', 'igst', 'cgst', 'sgst', 'cess']
-    labels = {'invoice':'Invoice Value (₹)', 'taxable':'Taxable VALUE', 'igst':'Integrated Tax (₹)',
+    labels = {'invoice':'Invoice Value (â‚¹)', 'taxable':'Taxable VALUE', 'igst':'Integrated Tax (â‚¹)',
               'cgst':'Central Tax', 'sgst':'State/UT Tax', 'cess':'Cess'}
     wb = Workbook(); ws = wb.active; ws.title = 'B2B'
     if multirow:
@@ -78,13 +79,13 @@ def test_all_six_totals_decimals_negatives_multiline_and_preservation(tmp_path,m
             value=after[output['worksheet']].cell(row,2).value
         assert Decimal(str(value))==Decimal(item['total'])
     assert not any(c.data_type=='f' for sheet in after for row in sheet for c in row)
-    # The original negative-value GST rule remains a review case.
-    assert any('negative' in flag['message'] for flag in result['flagged'])
+    # Phase 4 applies identical matching to consistent signed credits.
+    assert after['B2B'].cell(header+2,result['rate_col']).value==18
     after.close()
 
 
 @pytest.mark.parametrize('value,fmt',[
-    ('123.45','General'),('INV-118','General'),('₹100','General'),(True,'General'),
+    ('123.45','General'),('INV-118','General'),('â‚¹100','General'),(True,'General'),
     (datetime(2026,10,24),'yyyy-mm-dd'),(.18,'0%'),('#VALUE!','General'),
 ])
 def test_invalid_values_never_become_money(value,fmt):
@@ -183,24 +184,27 @@ def test_api_totals_excel_and_verification_agree():
             'worksheet':'B2B','first_data_row':2,'invoice_col':2,'taxable_col':3})
         assert response.status_code==200,response.text
         body=response.json(); totals=body['column_totals']
-        assert body['summary']['total']==len(totals['included_rows'])==3
-        assert any('IGST' in row['reason'] for row in body['verification'])
-        download=client.get('/api/excel/download/'+body['file_id'])
-        loaded=load_workbook(BytesIO(download.content))
-        assert Decimal(str(loaded['B2B']['B5'].value))==Decimal(totals['columns']['invoice']['total'])
-        assert Decimal(str(loaded['B2B']['E5'].value))==Decimal(totals['columns']['igst']['total'])
-        loaded.close()
+        assert len(totals['included_rows'])==3
+        assert any('IGST' in row['reason'] for row in body['rows'])
+        assert body['generation_blockers']
+        assert client.post('/api/excel/reviews/'+body['review_id']+'/generate').status_code==422
+        assert 'file_id' not in body
     finally: app.dependency_overrides.clear()
 
 
 def test_prasuna_fixture_when_available(tmp_path):
-    source=Path('PRASUNA 2B-1(1).xlsx')
-    if not source.exists(): pytest.skip('PRASUNA 2B-1(1).xlsx is not available locally')
+    candidates=sorted(Path('.').glob('*.xlsx'))+sorted(Path('tests/fixtures').glob('**/*.xlsx'))
+    if not candidates:pytest.skip('No real GST workbook is available locally')
+    source=candidates[0]
     wb=load_workbook(source);ws=next(sheet for sheet in wb if detect_columns(sheet))
     detection=detect_columns(ws);header=max(detection['invoice_header_row'],detection['taxable_header_row'])
     expected=aggregate(ws,header+1,detection['invoice_col'],detection['taxable_col'])
-    result=process_workbook(source,tmp_path/'prasuna.xlsx',ws.title,detection['invoice_col'],detection['taxable_col'],header)
+    from backend.reviews import analyze
+    options=dict(worksheet=ws.title,first_data_row=header+1,invoice_col=detection['invoice_col'],taxable_col=detection['taxable_col'],invoice_number_col=None,monetary_columns=None,invoice_header_row=detection['invoice_header_row'],taxable_header_row=detection['taxable_header_row'],recalculate_existing=False,confirm_overwrite=False)
+    result=analyze(source.read_bytes(),options)
     assert result['column_totals']['columns']==expected['columns']
+    assert any(row['status']!='MATCHED' for row in result['rows'])
+    # Real final export is intentionally pending end-user decisions.
     wb.close()
 
 

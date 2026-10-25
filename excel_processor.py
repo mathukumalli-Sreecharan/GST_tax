@@ -148,8 +148,11 @@ def _assert_supported(path, wb, ws):
 
 def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, header_row,
                      invoice_header_row=None, taxable_header_row=None,
-                     existing_rate_col=None, recalculate_existing=False, monetary_columns=None):
+                     existing_rate_col=None, recalculate_existing=False, monetary_columns=None,
+                     transaction_columns=None, rate_overrides=None, row_splits=None):
     """Insert Rate(%) immediately after taxable column; return summary and flagged rows."""
+    rate_overrides = rate_overrides or {}
+    row_splits = row_splits or {}
     destination = Path(destination)
     source_path = Path(source) if isinstance(source, (str, Path)) else None
     if source_path is not None and (source_path.resolve() == destination.resolve() or
@@ -180,10 +183,10 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
         wb.close()
         raise PreservationError('The selected existing rate column does not have a detected Rate (%) header; no original column was overwritten.')
     existing_rate_col = existing_rate_col or (detected_rate[0] if detected_rate else None)
-    if ws.protection.sheet and (not existing_rate_col or recalculate_existing):
+    if ws.protection.sheet and (not existing_rate_col or recalculate_existing or rate_overrides):
         wb.close()
         raise PreservationError("The selected worksheet is protected. Updating Rate(%) would bypass worksheet protection. Use an authorized unprotected copy or keep existing rates.")
-    totals = aggregate(ws, header_row + 1, invoice_col, taxable_col, monetary_columns)
+    totals = aggregate(ws, header_row + 1, invoice_col, taxable_col, monetary_columns, transaction_columns)
     if detected_rate and any(item['source_column'] == detected_rate[0] for item in totals['columns'].values()):
         wb.close()
         raise ValueError('Rate (%) cannot be a monetary column.')
@@ -300,8 +303,8 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
     # Keep original physical row numbering and blank rows; process each row independently.
     for row in sorted(included_rows):
         result = calculate_rate(ws.cell(row, invoice_col).value, ws.cell(row, taxable_col).value)
-        if not existing_rate_col or recalculate_existing:
-            ws.cell(row, rate_col).value = result.rate
+        if not existing_rate_col or recalculate_existing or row in rate_overrides:
+            ws.cell(row, rate_col).value = rate_overrides.get(row, result.rate)
         if result.rate is None:
             summary["unmatched"] += 1
         else:
@@ -314,7 +317,14 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
                             "difference": str(result.difference) if result.difference is not None else "",
                             "rate": result.rate, "message": result.message})
     try:
-        if existing_rate_col and not recalculate_existing and not totals_changed:
+        if row_splits:
+            from row_splits import transform_rows
+            try:
+                transform_rows(wb, ws, row_splits, totals, rate_col, None if existing_rate_col else rate_col,
+                               transaction_columns or {})
+            except ValueError as exc:
+                raise PreservationError(str(exc)) from exc
+        if existing_rate_col and not recalculate_existing and not totals_changed and not rate_overrides and not row_splits:
             # Preserve the original bytes when no workbook update is possible or needed.
             destination.write_bytes(source_data)
         else:
@@ -327,12 +337,12 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
         try:
             preserve_numeric_cells(source_data, destination, baseline, sheet_name,
                                    None if existing_rate_col else rate_col, rate_col,
-                                   recalculate_existing, included_rows, totals)
+                                   recalculate_existing, included_rows, totals, rate_overrides, row_splits)
             check = load_workbook(destination, read_only=False, data_only=False)
             if check.sheetnames != wb.sheetnames or rate_col > check[sheet_name].max_column:
                 raise PreservationError('Export validation failed; output was removed.')
             validate_export(baseline, check, wb, sheet_name, None if existing_rate_col else rate_col,
-                            rate_col, recalculate_existing, included_rows, totals)
+                            rate_col, recalculate_existing, included_rows, totals, rate_overrides, row_splits)
         except ValueError as exc:
             raise PreservationError(str(exc)) from exc
         finally:

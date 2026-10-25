@@ -75,6 +75,8 @@ validate_production_config()
 app = FastAPI(title="GST Ledger Studio API", version="1.0.0", lifespan=lifespan)
 app.include_router(approval_router)
 app.include_router(files_router)
+from backend.reviews import router as review_router
+app.include_router(review_router)
 
 
 def configured_cors_origins(value: str | None = None) -> list[str]:
@@ -229,8 +231,7 @@ async def inspect_excel(file: UploadFile = File(...), user_id: str = Depends(req
         temp.unlink(missing_ok=True)
 
 
-@app.post("/api/excel/process")
-async def process_excel(
+async def generate_excel(
     file: UploadFile = File(...),
     worksheet: str = Form(...),
     first_data_row: int = Form(..., ge=2),
@@ -243,6 +244,7 @@ async def process_excel(
     recalculate_existing: bool = Form(False),
     confirm_overwrite: bool = Form(False),
     user_id: str = Depends(require_approved_user),
+    review_context: dict | None = None,
 ):
     purge_expired_results()
     if invoice_col == taxable_col:
@@ -281,7 +283,10 @@ async def process_excel(
             result = process_workbook(source, output, worksheet, invoice_col, taxable_col,
                                       first_data_row - 1, inv_header, tax_header,
                                       existing[0] if existing else None,
-                                      bool(existing and recalculate_existing and confirm_overwrite), monetary_mapping)
+                                      bool(existing and recalculate_existing and confirm_overwrite), monetary_mapping,
+                                      transaction_columns=(review_context or {}).get("transaction_columns"),
+                                      rate_overrides=(review_context or {}).get("overrides"),
+                                      row_splits=(review_context or {}).get("splits"))
             # Read source values and produce a typed row result table from the same calculation engine.
             original = load_workbook(source, read_only=True, data_only=False, keep_links=True)
             original_ws = original[worksheet]
@@ -313,7 +318,12 @@ async def process_excel(
                         f"{issue['field'].upper()} ({get_column_letter(issue['column'])}): {issue['message']}" for issue in monetary_issues)
                     if status == "MATCHED":
                         status = "REVIEW REQUIRED"
-                rows.append({"excel_row": row_index, "invoice_number": str(number) if number is not None else "",
+                assigned=calc.rate
+                if existing and not recalculate_existing:
+                    kept=as_decimal(original_ws.cell(row_index,existing[0]).value)
+                    assigned=float(kept) if kept is not None and 0<=kept<=100 else None
+                assigned=(review_context or {}).get('overrides',{}).get(row_index,assigned)
+                rows.append({"assigned_rate":assigned,"excel_row": row_index, "invoice_number": str(number) if number is not None else "",
                              "invoice_value": str(invoice_raw) if invoice_raw is not None else "",
                              "taxable_value": str(taxable_raw) if taxable_raw is not None else "",
                              "rate": calc.rate, "difference": str(calc.difference) if calc.difference is not None else "",
@@ -332,6 +342,11 @@ async def process_excel(
             original.close()
         finally:
             workbook.close()
+        for row in rows:
+            row['output_rows'] = result['column_totals'].get('source_to_output_rows', {}).get(str(row['excel_row']), [row['excel_row']])
+            split = (review_context or {}).get('splits', {}).get(row['excel_row'])
+            if split:
+                row['replacement_rows'] = split
         status_counts = {status: sum(1 for row in rows if row["status"] == status)
                          for status in ("MATCHED", "REVIEW REQUIRED", "UNMATCHED", "INVALID", "AMBIGUOUS")}
         rate_counts = {str(rate): sum(1 for row in rows if row["rate"] == rate)
@@ -344,15 +359,36 @@ async def process_excel(
                    "twenty_eight_percent": rate_counts["28"],
                    "review_required": status_counts["REVIEW REQUIRED"] + status_counts["INVALID"] + status_counts["AMBIGUOUS"],
                    "unmatched": status_counts["UNMATCHED"], "status_counts": status_counts}
+        if review_context is not None:
+            from decimal import Decimal
+            verified_counts={str(rate):0 for rate in SUPPORTED_RATES}
+            for row in rows:
+                actual_rates=[part['rate'] for part in row.get('replacement_rows',[])] or [row['assigned_rate']]
+                for rate in actual_rates:
+                    if rate is not None:
+                        key=format(Decimal(str(rate)).normalize(),'f')
+                        verified_counts[key]=verified_counts.get(key,0)+1
+            summary['inferred_rate_counts']=summary['rate_counts']
+            summary['rate_counts']=verified_counts
+            for count_field,key in [('five_percent','5'),('twelve_percent','12'),('eighteen_percent','18'),('twenty_eight_percent','28')]:summary[count_field]=verified_counts.get(key,0)
+            summary['review_complete']=True
+        summary["output_transaction_rows"] = sum(len(row["output_rows"]) for row in rows)
+        summary["confirmed_split_count"] = len((review_context or {}).get("splits", {}))
         flagged_rows = [row for row in rows if row["status"] != "MATCHED"]
         report_data = []
-        for row in flagged_rows:
+        report_rows = rows if (review_context or {}).get("splits") else flagged_rows
+        for row in report_rows:
+            actual_parts = row.get("replacement_rows")
+            report_rate = (", ".join(part["rate"] + "%" for part in actual_parts) if actual_parts
+                           else (review_context or {}).get("overrides", {}).get(row["excel_row"], row["rate"]))
             report_data.append({"row": row["excel_row"], "invoice_letter": row["invoice_letter"],
                                 "invoice_col": row["invoice_column"], "invoice_header": row["invoice_header"],
                                 "taxable_letter": row["taxable_letter"], "taxable_col": row["taxable_column"],
                                 "taxable_header": row["taxable_header"], "rate_letter": row["rate_letter"],
                                 "rate_col": row["rate_column"], "difference": row["difference"],
-                                "rate": row["rate"], "message": row["reason"]})
+                                "rate": report_rate, "message": row["reason"],
+                                **({"output_rows": row["output_rows"], "replacement_rows": row.get("replacement_rows", [])}
+                                   if (review_context or {}).get("splits") else {})})
         report_path = STORAGE / f"{uuid.uuid4().hex}_report.csv"
         report_path.write_text(report_csv(report_data), encoding="utf-8")
         if not output.exists():
@@ -360,11 +396,12 @@ async def process_excel(
         file_id = str(uuid.uuid4())
         original_name = (file.filename or "workbook.xlsx").replace("\\", "/").rsplit("/", 1)[-1]
         original_name = re.sub(r"[\x00-\x1f\x7f]", "_", original_name)[:250] or name
-        history = await asyncio.to_thread(save_generated_file, file_id, user_id, original_name, output, summary, len(flagged_rows), output_name="updated_" + name)
+        history = ({"saved":False,"warning":"Export is stored with this review. Separate My Files history has not yet been confirmed."} if (review_context or {}).get("defer_history") else await asyncio.to_thread(save_generated_file, file_id, user_id, original_name, output, summary, len(flagged_rows), output_name="updated_" + name))
         RESULTS[file_id] = {"output": output, "report": report_path, "filename": "updated_" + name,
                             "created": time.time(), "summary": summary, "rows": rows,
                             "worksheet": worksheet, "source_filename": name, "owner_id": user_id,
-                            "history_saved": history["saved"]}
+                            "history_saved": history["saved"],
+                            "durable_review_id": (review_context or {}).get('durable_review_id')}
         return {"file_id": file_id, "filename": "updated_" + name, "worksheet": worksheet,
                 "summary": summary, "rows": rows, "verification": flagged_rows, "history": history,
                 "column_totals": result["column_totals"],
@@ -403,6 +440,9 @@ def download_excel(file_id: str, user_id: str = Depends(require_approved_user)):
     # Saved results remain downloadable across sessions and server restarts. Do
     # not serve a stale local copy after its history record is deleted or expired.
     entry = RESULTS.get(file_id)
+    if entry and entry.get('durable_review_id') and not entry.get('history_saved'):
+        from backend.reviews import durable_download
+        return durable_download(entry['durable_review_id'],'download',user_id)
     if entry is None or entry.get("history_saved"):
         return file_download(file_id, user_id)
     entry = _get_result(file_id, user_id)
@@ -412,6 +452,12 @@ def download_excel(file_id: str, user_id: str = Depends(require_approved_user)):
 
 @app.get("/api/excel/report/{file_id}")
 def download_report(file_id: str, user_id: str = Depends(require_approved_user)):
+    cached = RESULTS.get(file_id)
+    if cached and cached.get('durable_review_id'):
+        if cached.get('history_saved'):
+            get_file(file_id,user_id)
+        from backend.reviews import durable_download
+        return durable_download(cached['durable_review_id'],'report',user_id)
     entry = _get_result(file_id, user_id)
     if entry.get("history_saved"):
         get_file(file_id, user_id)

@@ -21,3 +21,7 @@ frontend/playwright-report/
 *.csv
 *.pem
 *.key
+
+# Local staging development artifacts
+frontend/debug.log
+supabase/.temp/

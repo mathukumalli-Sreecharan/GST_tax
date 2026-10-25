@@ -1,3 +1,4 @@
+from review_helpers import reviewed_post
 """Generated layout coverage; no external accounting workbooks or fixed coordinates."""
 from decimal import Decimal
 from io import BytesIO
@@ -169,7 +170,7 @@ def test_api_returns_explicit_verification_conflict_without_download():
     ws.cell(ws.max_row+1,1,'Note: occupied destination')
     app.dependency_overrides[require_approved_user]=lambda:'test-user'
     try:
-        response=TestClient(app).post('/api/excel/process',files={'file':('generated.xlsx',snapshot(wb))},data={
+        response=reviewed_post(TestClient(app),'/api/excel/process',files={'file':('generated.xlsx',snapshot(wb))},data={
             'worksheet':ws.title,'first_data_row':header+1,'invoice_col':cols['invoice'],'taxable_col':cols['taxable']})
         assert response.status_code==422
         assert 'contains existing content' in response.json()['detail']
