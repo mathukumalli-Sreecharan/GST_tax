@@ -18,7 +18,8 @@ test('API refresh retries the same workbook with a fresh bearer token',async()=>
  let calls=[];
  const session={access_token:'old'};
  const client={auth:{getSession:async()=>({data:{session}}),refreshSession:async()=>({data:{session:{access_token:'new'}}})}};
- const api=load('lib/api.ts',{require:()=>({browserClient:()=>client}),FormData,fetch:async(url,init)=>{calls.push(init);return {status:calls.length===1?401:200,ok:calls.length!==1,json:async()=>({filename:'book.xlsx'})};},window:{dispatchEvent(){assert.fail('should refresh without prompting');}}});
+ const inspection={filename:'book.xlsx',size_bytes:100,sheets:[{name:'Sheet1',max_row:2,max_column:2,columns:[],preview:[]}]};
+ const api=load('lib/api.ts',{require:()=>({browserClient:()=>client}),FormData,fetch:async(url,init)=>{calls.push(init);return {status:calls.length===1?401:200,ok:calls.length!==1,json:async()=>inspection};},window:{dispatchEvent(){assert.fail('should refresh without prompting');}}});
  assert.equal((await api.inspectWorkbook(new Blob(['workbook']))).filename,'book.xlsx');
  assert.equal(calls.length,2);
  assert.equal(calls[0].headers.Authorization,'Bearer old');

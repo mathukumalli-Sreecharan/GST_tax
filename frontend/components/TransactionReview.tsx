@@ -1,7 +1,7 @@
 'use client';
 import {useEffect,useState} from 'react';
 import type {ColumnDef} from '@tanstack/react-table';
-import {approvalApi} from '@/lib/api';
+import {approvalApi,parseProcessResponse,parseReviewSession} from '@/lib/api';
 import {DataTable} from '@/components/DataTable';
 import type {ReviewSession,ReviewRow,ProcessResponse} from '@/lib/types';
 
@@ -17,15 +17,15 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
  const decision=row?initial?.decisions[String(row.excel_row)]:undefined;
  useEffect(()=>{if(!initial)void approvalApi<{reviews:typeof sessions}>('/excel/reviews').then(data=>setSessions(data.reviews)).catch(()=>{});},[initial]);
  useEffect(()=>{setChoice(decision?.choice??'');setCount(decision?.rates.length??0);setRates(decision?.rates??[]);setAllocations(decision?.split_preview?.taxable_allocations??[]);setCesses(decision?.split_preview?.cess_allocations??[]);setTaxMode(decision?.split_preview?.requested_mode??'');},[row?.excel_row,decision]);
- async function resume(id:string){setBusy(true);setError('');try{const review=await approvalApi<ReviewSession>(`/excel/reviews/${id}`);onUpdate(review);onResume?.();if(review.result)onGenerated(review.result);}catch(e){setError(e instanceof Error?e.message:'Unable to resume review.');}finally{setBusy(false);}}
+ async function resume(id:string){setBusy(true);setError('');try{const review=parseReviewSession(await approvalApi<unknown>(`/excel/reviews/${id}`));onUpdate(review);onResume?.();if(review.result)onGenerated(parseProcessResponse(review.result));}catch(e){setError(e instanceof Error?e.message:'Unable to resume review.');}finally{setBusy(false);}}
  async function save(){if(!initial||!row)return;setBusy(true);setError('');try{
-  onUpdate(await approvalApi<ReviewSession>(`/excel/reviews/${initial.review_id}/rows/${row.excel_row}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:initial.version,choice,...(choice==='WRONG'?{slab_count:count,rates}: {})})}));
+   onUpdate(parseReviewSession(await approvalApi<unknown>(`/excel/reviews/${initial.review_id}/rows/${row.excel_row}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:initial.version,choice,...(choice==='WRONG'?{slab_count:count,rates}: {})})})));
  }catch(e){setError(e instanceof Error?e.message:'Unable to save decision. Reload the review before retrying.');}finally{setBusy(false);}}
  async function split(action:'split-preview'|'split-confirm',manual=false){if(!initial||!row)return;setBusy(true);setError('');try{
   const body=action==='split-confirm'?{version:initial.version,preview_id:decision?.split_preview?.preview_id}:{version:initial.version,tax_mode:taxMode||null,...(manual?{taxable_allocations:allocations}: {}),...(cesses.length&&cesses.every(v=>v.trim())?{cess_allocations:cesses}: {})};
-  onUpdate(await approvalApi<ReviewSession>(`/excel/reviews/${initial.review_id}/rows/${row.excel_row}/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+   onUpdate(parseReviewSession(await approvalApi<unknown>(`/excel/reviews/${initial.review_id}/rows/${row.excel_row}/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})));
  }catch(e){setError(e instanceof Error?e.message:'Unable to validate the split.');}finally{setBusy(false);}}
- async function generate(){if(!initial)return;setBusy(true);setError('');try{const result=await approvalApi<ProcessResponse>(`/excel/reviews/${initial.review_id}/generate`,{method:'POST'});onUpdate({...initial,state:'generated',result});onGenerated(result);}catch(e){setError(e instanceof Error?e.message:'Unable to generate workbook.');}finally{setBusy(false);}}
+ async function generate(){if(!initial)return;setBusy(true);setError('');try{const result=parseProcessResponse(await approvalApi<unknown>(`/excel/reviews/${initial.review_id}/generate`,{method:'POST'}));onUpdate({...initial,state:'generated',result});onGenerated(result);}catch(e){setError(e instanceof Error?e.message:'Unable to generate workbook.');}finally{setBusy(false);}}
  if(!initial)return <>{sessions.length>0&&<section className="panel panel-body"><h2>Resume a review</h2><p className="subtext">Reviews are retained for up to 24 hours on this server.</p>{sessions.map(item=><div key={item.review_id} className="toolbar"><button className="btn" disabled={busy} onClick={()=>void resume(item.review_id)}>{item.filename} ({item.state})</button><button className="btn btn-small" disabled={busy} onClick={()=>{void approvalApi(`/excel/reviews/${item.review_id}`,{method:'DELETE'}).then(()=>setSessions(sessions.filter(s=>s.review_id!==item.review_id))).catch(e=>setError(e instanceof Error?e.message:'Unable to delete review.'));}}>Delete review</button></div>)}</section>}{error&&<p role="alert" className="inline-error">{error}</p>}</>;
  const progress=initial.progress;
  const unconfirmedSplit=Object.values(initial.decisions).some(d=>d.choice==='WRONG'&&d.rates.length>1&&!d.split_confirmed);
