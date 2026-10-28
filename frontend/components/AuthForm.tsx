@@ -38,8 +38,8 @@ export function AuthForm({mode, onSignedIn}:{mode:AuthMode; onSignedIn?:()=>void
    }
   } catch(e) {setError(e instanceof Error ? e.message : 'Please try again.');} finally {setBusy(false);}
  }
- return <div className="auth-form"><p className="auth-eyebrow">YOUR SECURE WORKSPACE</p><h1>{titles[mode]}</h1><p>Professional accounting, with confidence.</p>
- {message ? <div role="status"><p>{message}</p><Link href="/login">Return to sign in</Link></div> : <form onSubmit={submit}>
+ return <section className="auth-form-card"><div className="auth-form"><p className="auth-panel-eyebrow">{mode==='login'?'EXISTING ACCOUNT':mode==='register'?'NEW ACCOUNT':mode==='forgot-password'?'ACCOUNT RECOVERY':'SECURE PASSWORD UPDATE'}</p><h2>{titles[mode]}</h2><p className="auth-form-intro">{mode==='login'?'Sign in to continue to your GST workspace.':mode==='register'?'Create a secure account to begin.':mode==='forgot-password'?'We’ll send a secure link if your account is eligible.':'Choose a new password for your account.'}</p>
+ {message ? <div role="status" className="auth-success"><p>{message}</p><Link className="auth-inline-link" href="/login">Return to sign in</Link></div> : <form onSubmit={submit}>
  {mode==='register' && <label>Full name<input name="name" autoComplete="name" required maxLength={120}/></label>}
  {mode!=='reset-password' && <label>Email address<input name="email" type="email" autoComplete="email" required maxLength={254}/></label>}
  {mode!=='forgot-password' && <><label>Password<input name="password" type={show?'text':'password'} autoComplete={mode==='login'?'current-password':'new-password'} minLength={mode==='login'?1:12} maxLength={256} required/></label><button className="auth-text" type="button" aria-pressed={show} onClick={()=>setShow(!show)}>{show?'Hide':'Show'} password</button></>}
@@ -47,5 +47,5 @@ export function AuthForm({mode, onSignedIn}:{mode:AuthMode; onSignedIn?:()=>void
  {error && <p role="alert" className="auth-error">{error}</p>}
  <button className="auth-submit" disabled={busy}>{busy?'Please wait…':mode==='login'?'Sign in':mode==='register'?'Create account':mode==='forgot-password'?'Send reset link':'Update password'}</button>
  </form>}
- <nav><Link href="/login">Sign in</Link><Link href="/register">Register</Link><Link href="/forgot-password">Forgot password?</Link></nav></div>;
+ <nav className="auth-form-links"><Link className="auth-back-link" href="/">← Back to account selection</Link>{mode==='login'&&<><Link href="/forgot-password">Forgot password?</Link><Link href="/register">Create an account</Link></>}{mode==='register'&&<Link href="/login">Already have an account? Sign in</Link>}{mode==='forgot-password'&&<Link href="/login">Return to sign in</Link>}{mode==='reset-password'&&<Link href="/login">Return to sign in</Link>}</nav></div></section>;
 }
