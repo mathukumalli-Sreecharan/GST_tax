@@ -1,6 +1,6 @@
 const {test,expect}=require('@playwright/test');
 
-test('review pagination, manual slabs, persistence, edits and generation gate',async({page})=>{
+test('review filtering, navigation, manual slabs, persistence, edits and generation gate',async({page})=>{
  let state={review_id:'test-review',filename:'review.xlsx',worksheet:'Invoices',version:1,state:'open',excluded_rows:[],decisions:{},result:null,
   rows:Array.from({length:15},(_,i)=>({excel_row:i+7,supplier_gstin:'GSTIN-'+i,supplier_name:'Supplier '+i,invoice_number:'INV-'+i,invoice_date:'2026-10-25',invoice_value:i===14?'':'118',taxable_value:i===14?'':'100',igst:'18',cgst:'0',sgst:'0',cess:'0',rate:i===14?null:18,inferred_rate:i===14?null:18,status:i===14?'UNRESOLVED':i===1?'REVIEW_REQUIRED':'MATCHED',reason:i===14?'Missing monetary values':i===1?'Verify inconsistent tax details':''})),
   progress:{total:15,matched:13,requiring_review:2,verified:0,remaining:2}};
@@ -38,17 +38,26 @@ test('review pagination, manual slabs, persistence, edits and generation gate',a
  }
  await resume();
  await expect(page.getByRole('button',{name:'Generate Excel',exact:true})).toBeDisabled();expect(generated).toBe(0);
- await expect(page.locator('.data-table tbody tr')).toHaveCount(10);
- await page.getByRole('button',{name:'Next page',exact:true}).click();
- await expect(page.locator('.data-table tbody tr')).toHaveCount(5);
+ await expect(page.getByRole('heading',{name:'Transactions requiring verification (2)'})).toBeVisible();
+ await expect(page.locator('.data-table tbody tr')).toHaveCount(2);
+ await expect(page.locator('.data-table').getByText('INV-0',{exact:true})).toHaveCount(0);
+ await expect(page.locator('.data-table').getByText('INV-1',{exact:true})).toBeVisible();
  await expect(page.locator('.data-table').getByText('INV-14',{exact:true})).toBeVisible();
- // The default detail is the first suspicious transaction, independent of table pagination.
+ // Excel row 8 is first in the filtered list; navigation skips all matched rows.
+ await expect(page.getByRole('heading',{name:'Review Excel row 8',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Previous transaction',exact:true})).toBeDisabled();
  await page.getByRole('button',{name:'CORRECT',exact:true}).click();
  await page.getByRole('button',{name:'Save decision',exact:true}).click();
  await expect(page.getByText('Decision saved: CORRECT')).toBeVisible();
- await page.getByRole('button',{name:'Next page',exact:true}).click();
+ await expect(page.locator('.data-table').getByText('INV-1',{exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'Next transaction',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Review Excel row 21',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Next transaction',exact:true})).toBeDisabled();
+ await page.getByRole('button',{name:'Previous transaction',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Review Excel row 8',exact:true})).toBeVisible();
+ await expect(page.getByText('Decision saved: CORRECT')).toBeVisible();
+ await page.getByRole('button',{name:'Next transaction',exact:true}).click();
  await expect(page.getByRole('button',{name:'Generate Excel',exact:true})).toBeDisabled();
- await page.locator('.data-table').getByText('INV-14',{exact:true}).click();
  await expect(page.getByRole('heading',{name:'Review Excel row 21',exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'CORRECT',exact:true})).toBeDisabled();
  await page.getByRole('button',{name:'WRONG',exact:true}).click();
@@ -61,8 +70,7 @@ test('review pagination, manual slabs, persistence, edits and generation gate',a
  await expect(page.getByRole('button',{name:'Generate Excel',exact:true})).toBeDisabled();
  expect(generated).toBe(0);
  await resume(); // Saved decisions survive component/browser reload.
- await page.getByRole('button',{name:'Next page',exact:true}).click();
- await page.locator('.data-table').getByText('INV-14',{exact:true}).click();
+ await page.getByRole('button',{name:'Next transaction',exact:true}).click();
  await expect(page.getByLabel('GST rate for slab 2',{exact:true})).toHaveValue('12');
  await page.getByLabel('GST rate for slab 2',{exact:true}).fill('18');
  await page.getByRole('button',{name:'Update decision',exact:true}).click();
@@ -83,4 +91,22 @@ test('review pagination, manual slabs, persistence, edits and generation gate',a
  expect(generated).toBe(1);
  expect(decisions[0]).toEqual({version:1,choice:'CORRECT'});
  expect(decisions[1].rates).toEqual(['5','12']);
+});
+
+test('matched-only review shows an empty state and disables row navigation',async({page})=>{
+ const state={review_id:'matched-review',filename:'matched.xlsx',worksheet:'Invoices',version:1,state:'open',excluded_rows:[],decisions:{},result:null,
+  rows:[{excel_row:10,supplier_gstin:'GSTIN',supplier_name:'Supplier',invoice_number:'INV-10',invoice_date:'2026-10-25',invoice_value:'118',taxable_value:'100',igst:'18',cgst:'0',sgst:'0',cess:'0',rate:18,inferred_rate:18,status:'MATCHED',reason:''}],
+  progress:{total:1,matched:1,requiring_review:0,verified:0,remaining:0}};
+ await page.route('**/api/excel/reviews**',async route=>{
+  const url=new URL(route.request().url());
+  return route.fulfill({json:url.pathname==='/api/excel/reviews'?{reviews:[{review_id:state.review_id,filename:state.filename,state:state.state}]}:state});
+ });
+ await page.goto('/?screen=workspace');
+ const skip=page.getByRole('button',{name:'Skip introduction'});if(await skip.isVisible())await skip.click();
+ await page.getByRole('button',{name:'Process Excel',exact:true}).click();
+ await page.getByRole('button',{name:'matched.xlsx (open)',exact:true}).click();
+ await expect(page.getByText('No transactions require verification. All transactions are matched or no reviewable transactions remain.')).toBeVisible();
+ await expect(page.getByRole('heading',{name:'Transactions requiring verification (0)'})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Previous transaction',exact:true})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'Next transaction',exact:true})).toHaveCount(0);
 });

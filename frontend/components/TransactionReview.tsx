@@ -4,6 +4,7 @@ import type {ColumnDef} from '@tanstack/react-table';
 import {approvalApi,parseProcessResponse,parseReviewSession} from '@/lib/api';
 import {DataTable} from '@/components/DataTable';
 import type {ReviewSession,ReviewRow,ProcessResponse} from '@/lib/types';
+import {reviewableRows} from '@/lib/review-rows';
 
 const fields: [keyof ReviewRow,string][]=[['supplier_gstin','Supplier GSTIN'],['supplier_name','Supplier name'],['invoice_number','Invoice number'],['invoice_date','Invoice date'],['invoice_value','Invoice value'],['taxable_value','Taxable value'],['igst','IGST'],['cgst','CGST'],['sgst','SGST/UTGST'],['cess','Cess']];
 const columns:ColumnDef<ReviewRow,unknown>[]=[{accessorKey:'excel_row',header:'Excel row'},...fields.map(([accessorKey,header])=>({accessorKey,header})),{accessorKey:'rate',header:'Assigned rate'},{accessorKey:'status',header:'Status'},{accessorKey:'reason',header:'Reason for review'}];
@@ -13,7 +14,8 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
  const [cesses,setCesses]=useState<string[]>([]);
  const [allocations,setAllocations]=useState<string[]>([]),[taxMode,setTaxMode]=useState('');
  const [busy,setBusy]=useState(false),[error,setError]=useState('');
- const row=initial?.rows.find(item=>item.excel_row===selected)??initial?.rows.find(item=>item.status!=='MATCHED')??initial?.rows[0];
+ const reviewRows=initial?reviewableRows(initial.rows):[];
+ const row=reviewRows.find(item=>item.excel_row===selected)??reviewRows[0];
  const decision=row?initial?.decisions[String(row.excel_row)]:undefined;
  useEffect(()=>{if(!initial)void approvalApi<{reviews:typeof sessions}>('/excel/reviews').then(data=>setSessions(data.reviews)).catch(()=>{});},[initial]);
  useEffect(()=>{setChoice(decision?.choice??'');setCount(decision?.rates.length??0);setRates(decision?.rates??[]);setAllocations(decision?.split_preview?.taxable_allocations??[]);setCesses(decision?.split_preview?.cess_allocations??[]);setTaxMode(decision?.split_preview?.requested_mode??'');},[row?.excel_row,decision]);
@@ -29,7 +31,7 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
  if(!initial)return <>{sessions.length>0&&<section className="panel panel-body"><h2>Resume a review</h2><p className="subtext">Reviews are retained for up to 24 hours on this server.</p>{sessions.map(item=><div key={item.review_id} className="toolbar"><button className="btn" disabled={busy} onClick={()=>void resume(item.review_id)}>{item.filename} ({item.state})</button><button className="btn btn-small" disabled={busy} onClick={()=>{void approvalApi(`/excel/reviews/${item.review_id}`,{method:'DELETE'}).then(()=>setSessions(sessions.filter(s=>s.review_id!==item.review_id))).catch(e=>setError(e instanceof Error?e.message:'Unable to delete review.'));}}>Delete review</button></div>)}</section>}{error&&<p role="alert" className="inline-error">{error}</p>}</>;
  const progress=initial.progress;
  const unconfirmedSplit=Object.values(initial.decisions).some(d=>d.choice==='WRONG'&&d.rates.length>1&&!d.split_confirmed);
- const index=row?initial.rows.findIndex(item=>item.excel_row===row.excel_row):0;
+ const index=row?reviewRows.findIndex(item=>item.excel_row===row.excel_row):-1;
  const preview=decision?.split_preview;
  const savedSlabs=choice==='WRONG'&&JSON.stringify(rates)===JSON.stringify(decision?.rates);
  const unsavedDecision=decision&&(choice!==decision.choice||(choice==='WRONG'&&!savedSlabs));
@@ -42,14 +44,14 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
   {initial.state==='generating'&&<p className="subtext">Generation is in progress. Reload this review to check its state. An interrupted generation can be recovered after its ten-minute lease expires.</p>}
   {initial.state==='generating'&&initial.lease_until&&initial.lease_until*1000<Date.now()&&<button className="btn" disabled={busy} onClick={()=>{setBusy(true);void approvalApi<ReviewSession>(`/excel/reviews/${initial.review_id}/recover`,{method:'POST'}).then(onUpdate).catch(e=>setError(e instanceof Error?e.message:'Recovery failed.')).finally(()=>setBusy(false));}}>Recover interrupted generation</button>}
   {initial.generation_blockers?.map(message=><p className="inline-error" key={message}>{message}</p>)}
-  <section className="panel panel-body"><h3>All transaction rows</h3><DataTable rows={initial.rows} columns={columns} statusFilter onRowClick={item=>setSelected(item.excel_row)} />
+  <section className="panel panel-body"><h3>Transactions requiring verification ({reviewRows.length})</h3><DataTable rows={reviewRows} columns={columns} statusFilter emptyText="No transactions require verification. All transactions are matched or no reviewable transactions remain." onRowClick={item=>setSelected(item.excel_row)} />
   <details><summary>Excluded structural rows ({initial.excluded_rows.length})</summary><ul>{initial.excluded_rows.map(item=><li key={item.row}>Excel row {item.row}: {item.reason}</li>)}</ul></details></section>
   {row&&<section className="panel panel-body" style={{marginTop:16}}><h3>Review Excel row {row.excel_row}</h3><p className="subtext">{row.status}: {row.reason||'The assigned rate matches the existing calculation rules.'}</p>
    <dl className="detail-list">{fields.map(([key,label])=><div className="detail-item" key={key}><dt className="detail-label">{label}</dt><dd className="detail-value">{String(row[key]??'')||'Unavailable'}</dd></div>)}<div className="detail-item"><dt>Currently assigned rate</dt><dd>{row.rate===null?'Not assigned':`${row.rate}%`}</dd></div></dl>
    <div className="toolbar" style={{marginTop:16}}><button className="btn" aria-pressed={choice==='CORRECT'} disabled={!editable||row.rate===null} onClick={()=>setChoice('CORRECT')}>CORRECT</button><button className="btn" aria-pressed={choice==='WRONG'} disabled={!editable} onClick={()=>setChoice('WRONG')}>WRONG</button></div>
    {choice==='WRONG'&&<div className="form-grid" style={{marginTop:16}}><label className="field">How many GST slabs does this invoice contain?<input aria-label="Number of GST slabs" type="number" min={1} max={10} value={count||''} disabled={!editable} onChange={event=>{const value=Math.max(0,Math.min(10,Math.trunc(Number(event.target.value))));setCount(value);setRates(Array.from({length:value},(_,i)=>rates[i]??''));}}/></label>{Array.from({length:count},(_,i)=><label className="field" key={i}>GST rate for slab {i+1} (%)<input aria-label={`GST rate for slab ${i+1}`} type="number" min={0} max={100} step="0.01" value={rates[i]??''} disabled={!editable} onChange={event=>setRates(rates.map((rate,j)=>j===i?event.target.value:rate))}/></label>)}</div>}
    {choice==='WRONG'&&<p className="subtext">Enter the actual rates for this invoice. Taxable and Cess allocations must keep the original transaction sign. Save the selected rates, then calculate and confirm replacement rows for multiple slabs.</p>}
-   <div className="toolbar" style={{marginTop:16}}><button className="btn btn-primary" disabled={!editable||!choice||(choice==='WRONG'&&(!count||rates.some(value=>!value.trim())))} onClick={()=>void save()}>{busy?'Saving...':decision?'Update decision':'Save decision'}</button><button className="btn" disabled={busy||index===0} onClick={()=>setSelected(initial.rows[index-1].excel_row)}>Previous transaction</button><button className="btn" disabled={busy||index>=initial.rows.length-1} onClick={()=>setSelected(initial.rows[index+1].excel_row)}>Next transaction</button>{decision&&<span role="status">Decision saved: {decision.choice}</span>}</div>
+   <div className="toolbar" style={{marginTop:16}}><button className="btn btn-primary" disabled={!editable||!choice||(choice==='WRONG'&&(!count||rates.some(value=>!value.trim())))} onClick={()=>void save()}>{busy?'Saving...':decision?'Update decision':'Save decision'}</button><button className="btn" disabled={busy||index<=0} onClick={()=>setSelected(reviewRows[index-1].excel_row)}>Previous transaction</button><button className="btn" disabled={busy||index<0||index>=reviewRows.length-1} onClick={()=>setSelected(reviewRows[index+1].excel_row)}>Next transaction</button>{decision&&<span role="status">Decision saved: {decision.choice}</span>}</div>
   </section>}
   {row&&decision?.choice==='WRONG'&&decision.rates.length>1&&<section className="panel panel-body" style={{marginTop:16}} aria-label="Mixed-rate allocation">
    <h3>Replacement rows for Excel row {row.excel_row}</h3>
