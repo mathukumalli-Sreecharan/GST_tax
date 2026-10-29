@@ -24,8 +24,9 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
    const updated=parseReviewSession(await approvalApi<unknown>(`/excel/reviews/${initial.review_id}/rows/${row.excel_row}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:initial.version,choice:selectedChoice,...(selectedChoice==='WRONG'?{slab_count:count,rates}: {})})}));
    onUpdate(updated);
    const currentIndex=reviewRows.findIndex(item=>item.excel_row===row.excel_row),nextRow=reviewRows[currentIndex+1];
-   setSaveNotice(nextRow?`Decision saved for Excel row ${row.excel_row}. Next transaction selected.`:`Decision saved for Excel row ${row.excel_row}. This was the final transaction.`);
-   if(nextRow)setSelected(nextRow.excel_row);
+   const needsAllocations=selectedChoice==='WRONG'&&rates.length>1;
+   setSaveNotice(needsAllocations?`Rates saved for Excel row ${row.excel_row}. Enter and confirm taxable allocations before continuing.`:nextRow?`Decision saved for Excel row ${row.excel_row}. Next transaction selected.`:`Decision saved for Excel row ${row.excel_row}. This was the final transaction.`);
+   if(nextRow&&!needsAllocations)setSelected(nextRow.excel_row);
  }catch(e){setError(e instanceof Error?e.message:'Unable to save decision. Reload the review before retrying.');}finally{setBusy(false);}}
  async function split(action:'split-preview'|'split-confirm',manual=false){if(!initial||!row)return;setBusy(true);setError('');try{
   const body=action==='split-confirm'?{version:initial.version,preview_id:decision?.split_preview?.preview_id}:{version:initial.version,tax_mode:taxMode||null,...(manual?{taxable_allocations:allocations}: {}),...(cesses.length&&cesses.every(v=>v.trim())?{cess_allocations:cesses}: {})};

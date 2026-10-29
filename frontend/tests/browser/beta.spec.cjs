@@ -54,6 +54,12 @@ test('login remains public and approval refresh opens then removes the workspace
  await page.goto('/?screen=gate&status=pending');await page.getByRole('button',{name:'Check approval status'}).click();await expect(page.getByText('Approved workspace content')).toBeVisible();
  status='revoked';await page.evaluate(()=>window.dispatchEvent(new Event('approval-required')));await expect(page.getByText('Approved workspace content')).toHaveCount(0);await expect(page.getByRole('heading',{name:'Access revoked',exact:true})).toBeVisible();
 });
+test('temporary approval check failure keeps an already approved workspace available',async({page})=>{
+ let unavailable=true;await page.route('**/api/account/approval',route=>unavailable?route.fulfill({status:503,json:{detail:'Approval service unavailable'}}):route.fulfill({json:{ready:true,status:'revoked',email_verified:true,is_admin:false}}));
+ await page.goto('/?screen=gate&status=approved');await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+ await expect(page.getByText('Approved workspace content')).toBeVisible();await expect(page.getByRole('status')).toContainText('remains available');
+ unavailable=false;await page.getByRole('button',{name:'Retry access check'}).click();await expect(page.getByText('Approved workspace content')).toHaveCount(0);await expect(page.getByRole('heading',{name:'Access revoked',exact:true})).toBeVisible();
+});
 test('public registration requests verification and regular account hides admin navigation',async({page})=>{
  let signup;await page.route('**/test-auth/**',route=>{if(route.request().url().endsWith('/register'))signup=route.request().postDataJSON();return route.fulfill({json:{}});});
  await page.goto('/?screen=register');await page.getByLabel('Full name').fill('Beta Auditor');await page.getByLabel('Email address').fill('auditor@example.com');await page.getByLabel('Password',{exact:true}).fill('synthetic-password-123');await page.getByLabel('Confirm password').fill('synthetic-password-123');await page.getByRole('button',{name:'Create account',exact:true}).click();await expect(page.getByText(/Check your email for a verification link/)).toBeVisible();expect(signup.options.data).toEqual({full_name:'Beta Auditor'});

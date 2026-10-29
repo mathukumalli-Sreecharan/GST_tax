@@ -108,3 +108,29 @@ test('matched-only review shows an empty state and disables row navigation',asyn
  await expect(page.getByRole('button',{name:'Previous transaction',exact:true})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Next transaction',exact:true})).toHaveCount(0);
 });
+
+test('saving a multi-slab decision stays on the transaction for taxable allocations',async({page})=>{
+ let state={review_id:'allocation-review',filename:'allocations.xlsx',worksheet:'Invoices',version:1,state:'open',excluded_rows:[],decisions:{},result:null,
+  rows:[10,20].map((excel_row)=>({excel_row,supplier_gstin:'GSTIN',supplier_name:'Supplier',invoice_number:`INV-${excel_row}`,invoice_date:'2026-10-25',invoice_value:'118',taxable_value:'100',igst:'18',cgst:'0',sgst:'0',cess:'0',rate:18,inferred_rate:18,status:'REVIEW_REQUIRED',reason:'Confirm rate details'})),
+  progress:{total:2,matched:0,requiring_review:2,verified:0,remaining:2}};
+ await page.route('**/api/excel/reviews**',async route=>{
+  const request=route.request(),url=new URL(request.url());
+  if(request.method()==='POST'){
+   const body=request.postDataJSON(),row=Number(url.pathname.split('/').at(-1));
+   state={...state,version:state.version+1,decisions:{...state.decisions,[row]:{choice:body.choice,rates:body.rates??[],saved_at:1}},progress:{...state.progress,verified:1,remaining:1}};
+  }
+  return route.fulfill({json:url.pathname==='/api/excel/reviews'?{reviews:[{review_id:state.review_id,filename:state.filename,state:state.state}]}:state});
+ });
+ await page.goto('/?screen=workspace');await page.getByRole('button',{name:'Process Excel',exact:true}).click();
+ await page.getByRole('button',{name:'allocations.xlsx (open)',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Review Excel row 10',exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'WRONG',exact:true}).click();
+ await page.getByLabel('Number of GST slabs').fill('2');
+ await page.getByLabel('GST rate for slab 1',{exact:true}).fill('5');
+ await page.getByLabel('GST rate for slab 2',{exact:true}).fill('18');
+ await page.getByRole('button',{name:'Save decision',exact:true}).click();
+ await expect(page.getByText('Rates saved for Excel row 10. Enter and confirm taxable allocations before continuing.')).toBeVisible();
+ await expect(page.getByRole('heading',{name:'Review Excel row 10',exact:true})).toBeVisible();
+ await expect(page.getByLabel('Taxable allocation for slab 1')).toBeVisible();
+ await expect(page.getByRole('button',{name:'Next transaction',exact:true})).toBeEnabled();
+});
