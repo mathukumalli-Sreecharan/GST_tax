@@ -76,6 +76,7 @@ export type ProcessResponse = {
     twelve_percent?: number;
     eighteen_percent?: number;
     twenty_eight_percent?: number;
+    zero_percent?: number;
     rate_counts?: Record<string, number>;
     review_complete?: boolean;
     review_required: number;

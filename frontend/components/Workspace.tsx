@@ -22,12 +22,12 @@ const mappingSchema = z.object({ invoiceCol: z.number().int().positive(), taxabl
   .refine((value) => value.invoiceCol !== value.taxableCol, { message: "Invoice Value and Taxable Value must use different columns." });
 type MappingValues = z.infer<typeof mappingSchema>;
 const sizeLimit = 20 * 1024 * 1024;
-const supportedRates = [5, 12, 18, 28] as const;
+const supportedRates = [0, 5, 12, 18, 28] as const;
 type SupportedRate = (typeof supportedRates)[number];
 
 function rateCount(summary: ProcessResponse["summary"], rate: SupportedRate): number {
   const key = String(rate) as keyof NonNullable<ProcessResponse["summary"]["rate_counts"]>;
-  const legacyKey = ({ 5: "five_percent", 12: "twelve_percent", 18: "eighteen_percent", 28: "twenty_eight_percent" } as const)[rate];
+  const legacyKey = ({ 0: "zero_percent", 5: "five_percent", 12: "twelve_percent", 18: "eighteen_percent", 28: "twenty_eight_percent" } as const)[rate];
   return summary.rate_counts?.[key] ?? summary[legacyKey] ?? 0;
 }
 
@@ -259,7 +259,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
     {success && stage === 3 && <div className="success-note" style={{ marginBottom: 12 }}>{success}</div>}
     {stage === 0 && <><TransactionReview onUpdate={setReview} onResume={()=>{setResult(null);setStage(3);}} onGenerated={setResult} /> <section className="panel"><div className="panel-head"><div><h2>Upload workbook</h2></div></div><div className="panel-body">{uploadArea}{busy && <div className="loading"><span className="spinner" />Reading workbook…</div>}{file && !busy && <div className="success-note" style={{ marginTop: 10 }}>{file.name} · {(file.size / 1024).toFixed(1)} KB</div>}</div></section></>}
     {stage === 1 && <><div className="panel" style={{ marginBottom: 12 }}><div className="panel-head"><div><h2>Review column mapping</h2><p className="subtext" style={{ marginTop: 4 }}>{file?.name} · {((file?.size ?? 0) / 1024).toLocaleString()} KB</p></div><button className="btn btn-small" onClick={() => { setStage(0); setError(""); }}><RotateCw size={13} />Change file</button></div><div className="panel-body">{mappingView}<div className="result-actions" style={{ justifyContent: "flex-end", marginTop: 14 }}><button className="btn btn-primary" onClick={() => { const validation = mappingSchema.safeParse({ invoiceCol, taxableCol }); if (!validation.success) setError(validation.error.issues[0]?.message ?? "Select valid columns."); else { setError(""); setStage(2); } }}>Continue to processing<ArrowRight size={14} /></button></div></div></div></>}
-    {stage === 2 && <div className="panel"><div className="panel-head"><div><h2>Calculate GST rates</h2><p className="subtext" style={{ marginTop: 4 }}>Compare each row against supported 5%, 12%, 18%, and 28% GST rates.</p></div></div><div className="panel-body">
+    {stage === 2 && <div className="panel"><div className="panel-head"><div><h2>Calculate GST rates</h2><p className="subtext" style={{ marginTop: 4 }}>Compare each row against supported 0%, 5%, 12%, 18%, and 28% GST rates.</p></div></div><div className="panel-body">
       <div className="mapping-row"><strong>Workbook</strong><span className="code-ref">{sheetName}</span><span>{file?.name}</span></div>
       <div className="mapping-row"><strong>Invoice Value</strong><span className="code-ref">{activeSheet?.columns.find((column) => column.index === Number(invoiceCol))?.letter} · {invoiceCol}</span><span>{firstDataRow.toLocaleString()} first data row</span></div>
       <div className="mapping-row"><strong>Taxable Value</strong><span className="code-ref">{activeSheet?.columns.find((column) => column.index === Number(taxableCol))?.letter} · {taxableCol}</span><span>{activeSheet?.existing_rate ? "Existing rate column will be reused" : `New column ${activeSheet?.columns.find((column) => column.index === Number(taxableCol) + 1)?.letter ?? "after Taxable Value"}`}</span></div>
@@ -364,7 +364,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
     </div>}
   </>;
 
-  const settings = () => <><div className="page-head"><div><div className="eyebrow">CALCULATION POLICY</div><h1>Settings</h1><p className="subtext">GST calculation rules for your review.</p></div><ShieldCheck size={18} color="#24744c" /></div><section className="panel"><div className="panel-head"><h2>Calculation policy</h2></div><div className="panel-body"><Setting label="Supported GST rates" value="5%, 12%, 18%, and 28%" /><Setting label="Automatic match tolerance" value="Less than ₹1" /><Setting label="Verification threshold" value="₹1 to less than ₹50" /><Setting label="Unmatched threshold" value="₹50 or greater" /></div></section></>;
+  const settings = () => <><div className="page-head"><div><div className="eyebrow">CALCULATION POLICY</div><h1>Settings</h1><p className="subtext">GST calculation rules for your review.</p></div><ShieldCheck size={18} color="#24744c" /></div><section className="panel"><div className="panel-head"><h2>Calculation policy</h2></div><div className="panel-body"><Setting label="Supported GST rates" value="0%, 5%, 12%, 18%, and 28%" /><Setting label="Automatic match tolerance" value="Less than ₹1" /><Setting label="Verification threshold" value="₹1 to less than ₹50" /><Setting label="Unmatched threshold" value="₹50 or greater" /></div></section></>;
 
 
   const view=page === "Dashboard" ? dashboard() : page === "Process Excel" ? processPage() : page === "Verification" ? verification() : settings();

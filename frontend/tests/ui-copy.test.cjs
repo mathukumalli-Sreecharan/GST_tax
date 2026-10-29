@@ -23,7 +23,7 @@ test('static UI copy excludes framework terminology and removed settings interna
 });
 test('policy copy retains engine thresholds and all four workflow steps',()=>{
  const source=fs.readFileSync('components/Workspace.tsx','utf8');
- for(const text of ['Less than \u20b91','\u20b91 to less than \u20b950','\u20b950 or greater','5%, 12%, 18%, and 28%'])assert.ok(source.includes(text),text);
+ for(const text of ['Less than \u20b91','\u20b91 to less than \u20b950','\u20b950 or greater','0%, 5%, 12%, 18%, and 28%'])assert.ok(source.includes(text),text);
  assert.ok(source.includes('["Upload", "Column mapping", "Process", "Results"]'));
  assert.ok(!source.includes('upload-meta'));
 });
