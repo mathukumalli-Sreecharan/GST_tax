@@ -47,11 +47,9 @@ test('review filtering, navigation, manual slabs, persistence, edits and generat
  await expect(page.getByRole('heading',{name:'Review Excel row 8',exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'Previous transaction',exact:true})).toBeDisabled();
  await page.getByRole('button',{name:'CORRECT',exact:true}).click();
- await page.getByRole('button',{name:'Save decision',exact:true}).click();
- await expect(page.getByText('Decision saved: CORRECT')).toBeVisible();
- await expect(page.locator('.data-table').getByText('INV-1',{exact:true})).toBeVisible();
- await page.getByRole('button',{name:'Next transaction',exact:true}).click();
+ await expect(page.getByText('Decision saved for Excel row 8. Next transaction selected.')).toBeVisible();
  await expect(page.getByRole('heading',{name:'Review Excel row 21',exact:true})).toBeVisible();
+ await expect(page.locator('.data-table').getByText('INV-1',{exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'Next transaction',exact:true})).toBeDisabled();
  await page.getByRole('button',{name:'Previous transaction',exact:true}).click();
  await expect(page.getByRole('heading',{name:'Review Excel row 8',exact:true})).toBeVisible();
