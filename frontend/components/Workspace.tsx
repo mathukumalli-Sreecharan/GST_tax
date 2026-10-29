@@ -14,7 +14,7 @@ import { TransactionReview } from "@/components/TransactionReview";
 import { DataTable } from "@/components/DataTable";
 import {WorkspaceShell,type WorkspaceNav} from "@/components/WorkspaceShell";
 import Link from 'next/link';
-import { downloadResult, inspectWorkbook, processWorkbook } from "@/lib/api";
+import { approvalApi, downloadResult, inspectWorkbook, parseReviewSession, processWorkbook } from "@/lib/api";
 import type { ColumnMeta, InspectResponse, ProcessResponse, ResultRow, SheetInfo, ReviewSession } from "@/lib/types";
 
 type PageName = Exclude<WorkspaceNav,"My Files">;
@@ -68,6 +68,20 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
 
   const [review, setReview] = useState<ReviewSession | null>(null);
   const [monetaryColumns, setMonetaryColumns] = useState<Record<string, number | null>>({});
+  useEffect(() => {
+    let active = true;
+    void approvalApi<{reviews:{review_id:string;state:string}[]}>('/excel/reviews').then(async ({reviews}) => {
+      const latest = reviews[0];
+      if (!latest) return;
+      const restored = parseReviewSession(await approvalApi<unknown>(`/excel/reviews/${latest.review_id}`));
+      if (active) {
+        setReview(restored);
+        if (restored.result) setResult(restored.result);
+        setStage(3);
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   useEffect(()=>{
     const requested=new URLSearchParams(window.location.search).get('page');
     if(requested==='Dashboard'||requested==='Process Excel'||requested==='Verification'||requested==='Settings')setPage(requested);
@@ -273,7 +287,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
   const dashboard = () => {
     const total = result?.summary.total ?? review?.progress.total;
     const matched = result?.summary.matched ?? review?.progress.matched;
-    const requiringReview = result?.summary.review_required ?? review?.progress.requiring_review;
+    const requiringReview = result?.review_progress?.remaining ?? review?.progress.remaining ?? (result ? 0 : undefined);
     const unresolved = result?.summary.unmatched ?? review?.rows.filter((row) => row.status === "UNRESOLVED").length;
     const warnings = result?.verification.length ?? review?.progress.requiring_review;
     const reviewed = result ? total : review?.progress.verified;
@@ -341,7 +355,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
   };
 
   const verification = () => <>
-    <div className="page-head"><div><div className="eyebrow">EXCEPTION REVIEW</div><h1>Verification</h1><p className="subtext">Review flagged rows and check the original workbook references.</p></div><span className="status REVIEW_REQUIRED">{result?.verification.length ?? 0} FLAGGED</span></div>
+    <div className="page-head"><div><div className="eyebrow">EXCEPTION REVIEW</div><h1>Verification</h1><p className="subtext">Review flagged rows and check the original workbook references.</p></div><span className="status REVIEW_REQUIRED">{review?.progress.remaining ?? result?.verification.length ?? 0} REMAINING</span></div>
     {review ? <TransactionReview initial={review} onUpdate={setReview} onGenerated={setResult} /> : !result ? <div className="empty-state"><CircleHelp size={22} className="empty-icon" /><h2>No verification session</h2><p className="subtext" style={{ margin: "6px 0 14px" }}>Process a workbook to see flagged rows here.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}>Open processing workspace</button></div> : <div className="detail-layout"><section className="panel"><div className="panel-head"><div><h2>Flagged workbook rows</h2><p className="subtext" style={{ marginTop: 4 }}>Select a row to inspect rate comparison details.</p></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.verification} columns={verificationColumns} statusFilter onRowClick={setSelectedVerification} emptyText="No verification warnings." /></div></section>
       {selectedVerification && <aside className="panel detail-panel"><div className="panel-head"><div><h2>Row {selectedVerification.excel_row} details</h2><p className="subtext" style={{ marginTop: 4 }}>{selectedVerification.invoice_number || "Invoice number unavailable"}</p></div><button className="btn btn-small" aria-label="Close row details" onClick={() => setSelectedVerification(null)}><X size={13} /></button></div><div className="panel-body"><div style={{ marginBottom: 12 }}><Status status={selectedVerification.status} /></div><div className="detail-list">
         <Detail label="Worksheet" value={result.worksheet} /><Detail label="Actual Excel row" value={String(selectedVerification.excel_row)} />

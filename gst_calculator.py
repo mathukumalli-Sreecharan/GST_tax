@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-SUPPORTED_RATES = (5, 12, 18, 28)
+SUPPORTED_RATES = (0, 5, 12, 18, 28)
 
 
 @dataclass(frozen=True)

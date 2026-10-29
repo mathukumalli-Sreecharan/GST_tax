@@ -10,12 +10,20 @@ from openpyxl.styles import PatternFill
 
 from backend.main import app
 from backend.approvals import require_approved_user
+from gst_calculator import calculate_rate
 from gst_splits import calculate_split
 from tests.test_reviews import save
 
 
 def values(invoice='348', taxable='300', igst='48', cgst='0', sgst='0', cess='0'):
     return dict(invoice_value=invoice, taxable_value=taxable, igst=igst, cgst=cgst, sgst=sgst, cess=cess)
+
+
+def test_single_slab_reference_example_uses_existing_rate_calculation():
+    taxable=Decimal('10000');rate=Decimal('18')
+    assert calculate_rate(Decimal('11800'),taxable).rate==18
+    assert taxable*rate/100==Decimal('1800')
+    assert taxable+taxable*rate/100==Decimal('11800')
 
 
 def test_two_slab_solution_and_manual_three_slabs():
@@ -40,7 +48,8 @@ def test_intra_state_cess_and_missing_taxable_manual_allocations():
 def test_manual_tax_regime_and_rounding_are_explicit_and_conservative():
     row=values(igst='',cgst='',sgst='')
     assert calculate_split(row,[18,12])['manual_required']
-    assert calculate_split(row,[18,12],tax_mode='igst')['totals']['igst']=='48.00'
+    assert calculate_split(row,[18,12],tax_mode='igst')['manual_required']
+    assert calculate_split(row,[18,12],[200,100],tax_mode='igst')['totals']['igst']=='48.00'
     # A bounded rounding residual may be distributed, but never changes source totals.
     row=values('3.45','3.00','0.45')
     preview=calculate_split(row,[18,12],[Decimal('1.50'),Decimal('1.50')])
@@ -49,6 +58,32 @@ def test_manual_tax_regime_and_rounding_are_explicit_and_conservative():
     with pytest.raises(ValueError):calculate_split(values('349'),[18,12])
     with pytest.raises(ValueError):calculate_split(values(cgst='24',sgst='24'),[18,12])
     with pytest.raises(ValueError):calculate_split(values(),[18,12],tax_mode='cgst_sgst')
+
+
+@pytest.mark.parametrize(('record','rates','allocations','mode','expected_taxable','expected_igst','expected_cgst','expected_sgst','expected_invoice'),[
+    (values('46000','40000','6000'),[12,18],[20000,20000],'igst',[20000,20000],[2400,3600],[0,0],[0,0],[22400,23600]),
+    (values('46000','40000','0','3000','3000'),[12,18],[20000,20000],'cgst_sgst',[20000,20000],[0,0],[1200,1800],[1200,1800],[22400,23600]),
+    (values('45250','40000','5250'),[5,18],[15000,25000],'igst',[15000,25000],[750,4500],[0,0],[0,0],[15750,29500]),
+    (values('2300.03','2000.03','300.00'),[12,18],['1000.01','1000.02'],'igst',['1000.01','1000.02'],[120,180],[0,0],[0,0],['1120.01','1180.02']),
+])
+def test_independent_slab_examples_match_decimal_formula(record,rates,allocations,mode,expected_taxable,expected_igst,expected_cgst,expected_sgst,expected_invoice):
+    result=calculate_split(record,rates,allocations,tax_mode=mode)
+    rows=result['rows']
+    assert [Decimal(row['taxable']) for row in rows]==list(map(Decimal,map(str,expected_taxable)))
+    for field,expected in [('igst',expected_igst),('cgst',expected_cgst),('sgst',expected_sgst),('invoice',expected_invoice)]:
+        assert [Decimal(row[field]) for row in rows]==list(map(Decimal,map(str,expected)))
+    # Independent reference calculation for GST before currency rounding.
+    expected_gst=[Decimal(str(base))*Decimal(str(rate))/100 for base,rate in zip(allocations,rates)]
+    actual_gst=[Decimal(row['igst'])+Decimal(row['cgst'])+Decimal(row['sgst']) for row in rows]
+    assert actual_gst==[amount.quantize(Decimal('.01')) for amount in expected_gst]
+
+
+def test_invoice_difference_with_unmapped_charges_cannot_infer_gst_or_allocations():
+    # The extra 5.00 in invoice value is an unknown charge, not evidence of GST.
+    row=values('353','300','','','','0')
+    assert calculate_split(row,[18,12],tax_mode='igst')['manual_required']
+    with pytest.raises(ValueError,match='invoice values do not sum'):
+        calculate_split(row,[18,12],[200,100],tax_mode='igst')
 
 
 def test_zero_rate_slab_is_not_omitted():
@@ -134,6 +169,9 @@ def test_exact_replacement_mapping_totals_metadata_and_reprocessing(client,rever
     rate=result['rate_column']['index']
     col=lambda key:fields.index(key)+1+int(fields.index(key)+1>=rate)
     assert [ws.cell(r,rate).value for r in range(header+1,header+7)]==[18,12,5,12,18,18]
+    assert [Decimal(str(ws.cell(r,col('taxable')).value)) for r in range(header+1,header+7)]==[200,100,100,200,300,100]
+    assert [Decimal(str(ws.cell(r,col('igst')).value)) for r in range(header+1,header+7)]==[36,12,5,24,54,18]
+    assert [Decimal(str(ws.cell(r,col('invoice')).value)) for r in range(header+1,header+7)]==[236,112,105,224,354,118]
     assert [ws.cell(r,col('invoice_number')).value for r in range(header+1,header+7)]==[101,101,102,102,102,103]
     assert sum(Decimal(str(ws.cell(r,col('invoice')).value)) for r in range(header+1,header+7))==1149
     for key,total in [('invoice',1149),('taxable',1000),('igst',149),('cgst',0),('sgst',0),('cess',0)]:

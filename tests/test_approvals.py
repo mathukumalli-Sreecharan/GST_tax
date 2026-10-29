@@ -83,7 +83,7 @@ def test_approved_processing_then_revocation_and_cross_user_download(access):
         'worksheet':'Sheet', 'first_data_row':2, 'invoice_col':1, 'taxable_col':2})
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result['summary']['rate_counts'] == {'5':1,'12':1,'18':1,'28':1}
+    assert result['summary']['rate_counts'] == {'0':0,'5':1,'12':1,'18':1,'28':1}
     for kind in ('download', 'report'):
         endpoint = f'/api/excel/{kind}/{result["file_id"]}'
         assert client.get(endpoint).status_code == 200

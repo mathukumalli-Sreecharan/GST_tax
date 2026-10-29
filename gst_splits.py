@@ -86,7 +86,10 @@ def _calculate(row, rates, taxable_allocations, tax_mode, cess_allocations):
     mode = detected_mode or tax_mode
     if not mode:
         return {'manual_required': True, 'reason': 'Select the tax regime and enter taxable allocations; the original tax regime is unavailable.'}
-    gst = igst + cgst + sgst if detected_mode else inv - total - cess if inv is not None and total is not None else None
+    # Invoice minus taxable value is not a reliable GST constraint: it may
+    # include freight, discounts, or other non-GST charges. Only mapped source
+    # tax components can determine automatic slab allocations.
+    gst = igst + cgst + sgst if detected_mode else None
     if taxable_allocations is None:
         if len(rates) != 2 or total is None or gst is None:
             return {'manual_required': True, 'reason': 'Enter a taxable allocation for every selected slab; the source does not determine a unique solution.'}

@@ -296,7 +296,7 @@ def process_workbook(source, destination, sheet_name, invoice_col, taxable_col, 
     except TotalsConflict as exc:
         wb.close()
         raise PreservationError(str(exc)) from exc
-    summary = {5: 0, 12: 0, 18: 0, 28: 0, "unmatched": 0}
+    summary = {0: 0, 5: 0, 12: 0, 18: 0, 28: 0, "unmatched": 0}
     flagged = []
     inv_header = _cell_header(ws, invoice_col, invoice_header_row)
     tax_header = _cell_header(ws, taxable_col, taxable_header_row)

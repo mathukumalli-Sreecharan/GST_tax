@@ -6,7 +6,7 @@ from gst_calculator import calculate_rate
 
 
 @pytest.mark.parametrize(("invoice", "taxable", "rate"), [
-    (105, 100, 5), (112, 100, 12), (118, 100, 18), (128, 100, 28),
+    (100, 100, 0), (105, 100, 5), (112, 100, 12), (118, 100, 18), (128, 100, 28),
     (105, "100.25", 5),  # sub-rupee rounding delta
     (105, 102, 5),        # between ₹1 and ₹50: assign and flag
 ])

@@ -357,6 +357,7 @@ async def generate_excel(
                    "twelve_percent": rate_counts["12"],
                    "eighteen_percent": rate_counts["18"],
                    "twenty_eight_percent": rate_counts["28"],
+                   "zero_percent": rate_counts["0"],
                    "review_required": status_counts["REVIEW REQUIRED"] + status_counts["INVALID"] + status_counts["AMBIGUOUS"],
                    "unmatched": status_counts["UNMATCHED"], "status_counts": status_counts}
         if review_context is not None:
@@ -370,7 +371,7 @@ async def generate_excel(
                         verified_counts[key]=verified_counts.get(key,0)+1
             summary['inferred_rate_counts']=summary['rate_counts']
             summary['rate_counts']=verified_counts
-            for count_field,key in [('five_percent','5'),('twelve_percent','12'),('eighteen_percent','18'),('twenty_eight_percent','28')]:summary[count_field]=verified_counts.get(key,0)
+            for count_field,key in [('zero_percent','0'),('five_percent','5'),('twelve_percent','12'),('eighteen_percent','18'),('twenty_eight_percent','28')]:summary[count_field]=verified_counts.get(key,0)
             summary['review_complete']=True
         summary["output_transaction_rows"] = sum(len(row["output_rows"]) for row in rows)
         summary["confirmed_split_count"] = len((review_context or {}).get("splits", {}))

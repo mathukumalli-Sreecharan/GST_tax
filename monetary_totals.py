@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 
 FIELDS = {'invoice': 'Invoice Value', 'taxable': 'Taxable Value', 'igst': 'IGST',
           'cgst': 'CGST', 'sgst': 'SGST/UTGST', 'cess': 'Cess'}
-CURRENCY = '"â‚¹" #,##0.00;[Red]-"â‚¹" #,##0.00'
+CURRENCY = '"\u20b9" #,##,##0.00;[Red]-"\u20b9" #,##,##0.00'
 
 
 def norm(value):

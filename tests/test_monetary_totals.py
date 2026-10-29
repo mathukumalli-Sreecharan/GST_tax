@@ -152,6 +152,19 @@ def test_generated_grand_total_is_updated_without_double_counting(tmp_path):
     loaded.close()
 
 
+def test_generated_grand_total_uses_explicit_indian_rupee_format(tmp_path):
+    wb,ws,header,keys=fixture_workbook()
+    _,out=run(wb,ws,header,keys,tmp_path)
+    loaded=load_workbook(out)
+    total_row=next(row for row in range(1,loaded['B2B'].max_row+1)
+                   if loaded['B2B'].cell(row,1).value=='GRAND TOTAL')
+    number_format=loaded['B2B'].cell(total_row,2).number_format
+    rupee=chr(0x20b9)
+    assert number_format == f'"{rupee}" #,##,##0.00;[Red]-"{rupee}" #,##,##0.00'
+    assert '\ufffd' not in number_format and 'Ã' not in number_format and 'â' not in number_format
+    loaded.close()
+
+
 def test_protected_structure_fallback_does_not_bypass_security(tmp_path):
     wb,ws,header,keys=fixture_workbook(multirow=True)
     wb.security.lockStructure=True

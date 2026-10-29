@@ -105,9 +105,9 @@ def test_api_reports_all_four_rates_and_exports_rate_column():
         })
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result["summary"]["rate_counts"] == {"5": 1, "12": 1, "18": 1, "28": 1}
+    assert result["summary"]["rate_counts"] == {"0": 0, "5": 1, "12": 1, "18": 1, "28": 1}
     assert [result["summary"][key] for key in
-            ("five_percent", "twelve_percent", "eighteen_percent", "twenty_eight_percent")] == [1, 1, 1, 1]
+            ("zero_percent", "five_percent", "twelve_percent", "eighteen_percent", "twenty_eight_percent")] == [0, 1, 1, 1, 1]
     assert all(row["status"] == "MATCHED" for row in result["rows"])
     assert all(row["expected_12"] and row["difference_28"] for row in result["rows"])
 
@@ -137,7 +137,7 @@ def test_api_rate_summary_includes_zero_counts():
             "invoice_header_row": "1", "taxable_header_row": "1",
         })
     assert response.status_code == 200, response.text
-    assert response.json()["summary"]["rate_counts"] == {"5": 1, "12": 0, "18": 0, "28": 0}
+    assert response.json()["summary"]["rate_counts"] == {"0": 0, "5": 1, "12": 0, "18": 0, "28": 0}
 
 
 def test_api_rejects_non_xlsx_upload():

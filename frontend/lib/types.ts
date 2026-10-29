@@ -63,6 +63,7 @@ export type ColumnTotals = {
 };
 
 export type ProcessResponse = {
+  review_progress?: {total:number;matched:number;requiring_review:number;verified:number;remaining:number};
   column_totals?: ColumnTotals;
   history?: {saved: boolean; id?: string; expires_at?: string; warning?: string};
   file_id: string;

@@ -81,11 +81,16 @@ def test_gate_decisions_reload_edits_and_slab_validation(client):
     updated=response.json()
     assert updated['rows'][2]['rate']==review['rows'][2]['rate']
     assert updated['progress']['verified']==1
+    assert updated['progress']['remaining']==3
     assert save(client,review,row).status_code==409 # stale version
+    duplicate=save(client,updated,row,'CORRECT').json()
+    assert duplicate['progress']['verified']==1
+    assert duplicate['progress']['remaining']==3
+    updated=duplicate
     response=save(client,updated,row,rates=[18,28]);assert response.status_code==200
     persisted=client.get(path).json()
     assert persisted['decisions'][str(row)]['rates']==['18','28']
-    assert persisted['version']==3
+    assert persisted['version']==4
     assert client.get('/api/excel/reviews').json()['reviews'][0]['review_id']==review['review_id']
     for transaction in persisted['rows']:
         if transaction['status']!='MATCHED' and str(transaction['excel_row']) not in persisted['decisions']:

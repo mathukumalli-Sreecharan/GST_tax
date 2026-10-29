@@ -14,7 +14,7 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
  const [cesses,setCesses]=useState<string[]>([]);
  const [allocations,setAllocations]=useState<string[]>([]),[taxMode,setTaxMode]=useState('');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[saveNotice,setSaveNotice]=useState('');
- const reviewRows=initial?reviewableRows(initial.rows):[];
+ const reviewRows=initial?reviewableRows(initial.rows,initial.decisions):[];
  const row=reviewRows.find(item=>item.excel_row===selected)??reviewRows[0];
  const decision=row?initial?.decisions[String(row.excel_row)]:undefined;
  useEffect(()=>{if(!initial)void approvalApi<{reviews:typeof sessions}>('/excel/reviews').then(data=>setSessions(data.reviews)).catch(()=>{});},[initial]);
