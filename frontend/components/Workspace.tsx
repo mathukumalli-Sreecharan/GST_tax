@@ -1,14 +1,14 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CellContext, ColumnDef } from "@tanstack/react-table";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import {
-  AlertCircle, ArrowDownToLine, ArrowRight, BadgeCheck, Check, ChevronRight,
-  CircleHelp, FileSpreadsheet, FileWarning, RotateCw,
-  ShieldCheck, Upload, X,
+  Activity, AlertCircle, ArrowDownToLine, ArrowRight, BadgeCheck, Check, ChevronRight,
+  CircleAlert, CircleCheck, CircleHelp, FileCheck2, FileSpreadsheet,
+  FolderClosed, Lightbulb, RotateCw, Settings2, ShieldCheck, TriangleAlert, Upload, X, type LucideIcon,
 } from "lucide-react";
 import { TransactionReview } from "@/components/TransactionReview";
 import { DataTable } from "@/components/DataTable";
@@ -57,7 +57,6 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
   const [firstDataRow, setFirstDataRow] = useState(2);
   const [stage, setStage] = useState(0);
   const [result, setResult] = useState<ProcessResponse | null>(null);
-  const [recentFile, setRecentFile] = useState("");
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
@@ -129,7 +128,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
         taxableHeaderRow: activeSheet.detected?.taxable_header_row ?? firstDataRow - 1,
         recalculateExisting: Boolean(activeSheet.existing_rate && rateAction === "recalculate"),
         confirmOverwrite });
-      setResult(null); setReview(processed); setRecentFile(file.name); setStage(3); setPage("Process Excel");
+      setResult(null); setReview(processed); setStage(3); setPage("Process Excel");
       setSuccess("Analysis completed. Review transactions before generating Excel.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Processing failed. Check the workbook and try again."); setStage(1); }
     finally { setBusy(false); }
@@ -271,13 +270,75 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
     {stage === 3 && result && <ResultsView result={result} columns={resultColumns} onDownload={() => void triggerDownload("download")} onReport={() => void triggerDownload("report")} onRowClick={(row) => { setSelectedVerification(row); navigate("Verification"); }} onNew={() => { setStage(0); setResult(null); setReview(null); setFile(null); setInspection(null); setPage("Process Excel"); setSuccess(""); }} />}
   </>;
 
-  const dashboard = () => <>
-    <div className="page-head"><div><div className="eyebrow">GST LEDGER STUDIO / WORKSPACE</div><h1>Dashboard</h1><p className="subtext">Current processing session and review workload.</p></div><button className="btn btn-primary" onClick={() => { navigate("Process Excel"); setStage(0); setSuccess(""); }}><FileSpreadsheet size={14} />Process New Excel</button></div>
-    {result ? <><SummaryMetrics summary={result.summary} />
-      <div className="dashboard-grid"><section className="panel"><div className="panel-head"><div><h2>Recent processing summary</h2><p className="subtext" style={{ marginTop: 4 }}>Current browser session only.</p></div><span className="status MATCHED">COMPLETED</span></div><table className="summary-table"><tbody><tr><th>Workbook</th><td>{recentFile || result.filename}</td></tr><tr><th>Worksheet</th><td>{result.worksheet}</td></tr><tr><th>Invoices</th><td>{result.summary.total.toLocaleString()}</td></tr><tr><th>Verification warnings</th><td>{result.verification.length.toLocaleString()}</td></tr></tbody></table><div style={{ padding: 14 }}><button className="btn btn-small" onClick={() => navigate("Process Excel")}>View results<ChevronRight size={13} /></button></div></section>
-        <section className="panel"><div className="panel-head"><h2>Review queue</h2><FileWarning size={15} color="#946200" /></div><div className="panel-body"><div style={{ fontSize: 27, fontWeight: 650 }}>{result.verification.length.toLocaleString()}</div><p className="subtext" style={{ margin: "4px 0 14px" }}>Rows requiring verification</p><button className="btn btn-small" onClick={() => navigate("Verification")}>Open verification<ArrowRight size={13} /></button></div></section></div>
-    </> : <div className="empty-state" style={{ marginTop: 20 }}><FileSpreadsheet size={24} className="empty-icon" /><h2>No processing session yet</h2><p className="subtext" style={{ margin: "6px 0 15px" }}>Upload an Excel workbook to create a session summary. No historical or sample metrics are shown.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}><Upload size={14} />Process New Excel</button></div>}
-  </>;
+  const dashboard = () => {
+    const total = result?.summary.total ?? review?.progress.total;
+    const matched = result?.summary.matched ?? review?.progress.matched;
+    const requiringReview = result?.summary.review_required ?? review?.progress.requiring_review;
+    const unresolved = result?.summary.unmatched ?? review?.rows.filter((row) => row.status === "UNRESOLVED").length;
+    const warnings = result?.verification.length ?? review?.progress.requiring_review;
+    const reviewed = result ? total : review?.progress.verified;
+    const progress = total ? Math.round(((reviewed ?? 0) / total) * 100) : 0;
+    const startProcessing = () => { navigate("Process Excel"); setStage(0); setSuccess(""); };
+    const metricCard = (label: string, value: number | undefined, note: string, Icon: LucideIcon, tone: string, kind: string) =>
+      <div className={`dashboard-kpi ${kind}`} key={label}>
+        <span className="dashboard-kpi-icon" style={{ "--kpi-tone": tone } as CSSProperties}><Icon size={19} strokeWidth={2}/></span>
+        <div className="dashboard-kpi-copy"><span>{label}</span><strong>{value === undefined ? "—" : value.toLocaleString()}</strong><small>{value === undefined ? "No active session" : note}</small></div>
+      </div>;
+    return <div className="dashboard-page">
+      <section className="dashboard-hero" aria-labelledby="dashboard-welcome">
+        <div className="dashboard-hero-copy"><div className="dashboard-eyebrow">WELCOME TO GST LEDGER STUDIO</div>
+          <h2 id="dashboard-welcome">Your GST Workspace</h2>
+          <p>Review, reconcile, and process your GST workbooks with clarity and confidence.</p>
+          <button className="btn btn-primary dashboard-hero-action" onClick={startProcessing}><Upload size={17}/>Upload new Excel file<ArrowRight size={16}/></button>
+        </div>
+        <div className="dashboard-hero-art" aria-hidden="true"><div className="hero-sheet"><div className="hero-sheet-top"><span/><span/><span/></div><div className="hero-sheet-title">GST WORKBOOK</div><div className="hero-sheet-grid">{Array.from({length:18},(_,i)=><i key={i}/>)}</div></div><span className="hero-file-badge">XLSX</span><div className="hero-workflow-card"><span><CircleCheck/>Upload</span><span><CircleCheck/>Map columns</span><span><Activity/>Process</span><span><CircleCheck/>Review results</span></div></div>
+        <div className="dashboard-hero-note"><span className="dashboard-hero-note-icon"><FileSpreadsheet size={18}/></span><span><b>Ready to get started?</b><small>Upload and analyze your GST workbook.</small></span></div>
+      </section>
+
+      <div className="dashboard-layout">
+        <div className="dashboard-main-column">
+          <section className="session-section" aria-labelledby="session-title">
+            <div className="dashboard-section-heading"><div><h2 id="session-title">Current Session Overview</h2><p>Quick summary of your latest processing session.</p></div><span className={`session-state ${result ? "complete" : review ? "active" : "idle"}`}><span/>{result ? "Review complete" : review ? "Review in progress" : "No workbook selected"}</span></div>
+            <div className="dashboard-kpi-grid">
+              {metricCard("Invoices Processed",total,"Transactions analyzed",FileSpreadsheet,"#3b82f6","blue")}
+              {metricCard("Exact GST Matches",matched,"Matching records",CircleCheck,"#0f9d8a","teal")}
+              {metricCard("Requiring Review",requiringReview,"Needs your attention",TriangleAlert,"#f59e0b","amber")}
+              {metricCard("Unmatched Records",unresolved,"No rate assigned",CircleAlert,"#ef5363","rose")}
+            </div>
+            <div className="dashboard-kpi-grid dashboard-secondary-kpis">
+              {metricCard("Calculation Warnings",warnings,"Rows requiring a check",TriangleAlert,"#8958e8","purple")}
+              <div className="dashboard-kpi progress-kpi"><span className="dashboard-kpi-icon" style={{ "--kpi-tone": "#243b53" } as CSSProperties}><Activity size={19}/></span><div className="dashboard-kpi-copy"><span>Session Progress</span><strong>{result ? "Complete" : review ? `${progress}% reviewed` : "Not started"}</strong><small>{review ? `${review.progress.verified} of ${review.progress.total} rows reviewed` : result ? `${total?.toLocaleString() ?? 0} rows processed` : "Upload an Excel workbook to begin"}</small></div><span className="progress-ring" style={{ "--progress": `${result ? 100 : progress}%` } as CSSProperties}><b>{result ? "100%" : review ? `${progress}%` : "0%"}</b></span></div>
+            </div>
+          </section>
+
+          <section className="dashboard-upload-card" aria-labelledby="ready-title">
+            <div className="dashboard-upload-inner"><div className="upload-illustration" aria-hidden="true"><FolderClosed size={42}/><span><Upload size={20}/></span></div>
+              <h2 id="ready-title">{result ? "Your latest results are ready." : review ? "Your review is in progress." : "Your workspace is ready."}</h2>
+              <p>{result ? "View your processed workbook and verification details." : review ? "Continue reviewing transactions in your current session." : "Upload an Excel workbook to create a session summary."}</p>
+              {!result && !review && <small>No historical or sample metrics are shown.</small>}
+              {result ? <button className="btn btn-primary" onClick={()=>navigate("Process Excel")}>View results<ArrowRight size={15}/></button> : review ? <button className="btn btn-primary" onClick={()=>navigate("Process Excel")}>Continue review<ArrowRight size={15}/></button> : <button className="btn btn-primary" onClick={startProcessing}><Upload size={15}/>Upload new Excel file</button>}
+              <div className="dashboard-steps" aria-label="Workbook workflow">{[["1","Upload","Choose your Excel file"],["2","Map Columns","Confirm column mapping"],["3","Process","Analyze and validate"],["4","Review Results","Download your updated file"]].map(([number,label,description])=><div className="dashboard-step" key={number}><b>{number}</b><span><strong>{label}</strong><small>{description}</small></span></div>)}</div>
+            </div>
+          </section>
+        </div>
+
+        <aside className="dashboard-aside">
+          <section className="dashboard-side-card"><div className="dashboard-side-title"><span className="side-title-icon purple"><ArrowRight size={19}/></span><h2>Quick Actions</h2></div>
+            <button className="quick-action" onClick={startProcessing}><span className="quick-action-icon purple"><Upload size={18}/></span><span><b>Upload new Excel file</b><small>Upload and analyze a workbook</small></span><ChevronRight size={17}/></button>
+            <Link className="quick-action" href="/my-files"><span className="quick-action-icon blue"><FolderClosed size={18}/></span><span><b>View My Files</b><small>Access your generated workbooks</small></span><ChevronRight size={17}/></Link>
+            <button className="quick-action" onClick={()=>navigate("Verification")}><span className="quick-action-icon teal"><FileCheck2 size={18}/></span><span><b>Verification</b><small>Review flagged transactions</small></span><ChevronRight size={17}/></button>
+            <button className="quick-action" onClick={()=>navigate("Settings")}><span className="quick-action-icon purple"><Settings2 size={18}/></span><span><b>Settings</b><small>View calculation policy</small></span><ChevronRight size={17}/></button>
+          </section>
+          <section className="dashboard-side-card tips-card"><div className="dashboard-side-title"><span className="side-title-icon amber"><Lightbulb size={19}/></span><h2>Helpful Tips</h2></div>
+            <Tip icon={<FileSpreadsheet size={15}/>} title="Prepare your Excel file" text="Include invoice, taxable value, and GST columns." tone="purple"/>
+            <Tip icon={<FileCheck2 size={15}/>} title="Map columns carefully" text="Confirm detected column mappings before processing." tone="teal"/>
+            <Tip icon={<TriangleAlert size={15}/>} title="Review flagged records" text="Check and assign the correct GST rate to unresolved rows." tone="purple"/>
+            <Tip icon={<ArrowDownToLine size={15}/>} title="Download your results" text="Save the updated workbook and verification report." tone="amber"/>
+          </section>
+        </aside>
+      </div>
+    </div>;
+  };
 
   const verification = () => <>
     <div className="page-head"><div><div className="eyebrow">EXCEPTION REVIEW</div><h1>Verification</h1><p className="subtext">Review flagged rows and check the original workbook references.</p></div><span className="status REVIEW_REQUIRED">{result?.verification.length ?? 0} FLAGGED</span></div>
@@ -312,6 +373,10 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
 
 function Detail({ label, value }: { label: string; value: string }) { return <div className="detail-item"><div className="detail-label">{label}</div><div className="detail-value">{value}</div></div>; }
 function Setting({ label, value }: { label: string; value: string }) { return <div className="setting-row"><span>{label}</span><span className="setting-value">{value}</span></div>; }
+
+function Tip({icon,title,text,tone}:{icon:ReactNode;title:string;text:string;tone:"purple"|"teal"|"amber"}) {
+  return <div className="dashboard-tip"><span className={`quick-action-icon ${tone}`}>{icon}</span><span><b>{title}</b><small>{text}</small></span></div>;
+}
 
 function SummaryMetrics({ summary }: { summary: ProcessResponse["summary"] }) {
   return <div className="metric-grid">

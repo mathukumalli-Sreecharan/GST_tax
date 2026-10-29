@@ -1,5 +1,20 @@
 const {test,expect}=require('@playwright/test');
 const bad=/[\u00c2\u00c3\ufffd\u0080-\u009f]|\u00e2[\u0080-\u00bf\u2000-\u2122]/u;
+test('dashboard matches the welcome layout without inventing session metrics',async({page},testInfo)=>{
+ await page.setViewportSize({width:1440,height:1000});await openWorkspace(page);
+ await expect(page.getByRole('heading',{name:'Your GST Workspace'})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'Current Session Overview'})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'Your workspace is ready.'})).toBeVisible();
+ await expect(page.locator('.account-label strong')).toHaveCount(1);
+ await expect(page.getByText('No active session',{exact:true})).toHaveCount(5);
+ await expect(page.getByRole('heading',{name:'Quick Actions'})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'Helpful Tips'})).toBeVisible();
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+ await page.screenshot({path:testInfo.outputPath('dashboard-reference-layout.png'),fullPage:true,animations:'disabled'});
+ await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+ await page.getByRole('button',{name:/Upload new Excel file/}).first().click();
+ await expect(page.getByText('Drop an Excel workbook here')).toBeVisible();
+});
 async function openWorkspace(page){
  await page.goto('/?screen=workspace');
  const skip=page.getByRole('button',{name:'Skip introduction'});
@@ -34,7 +49,7 @@ for(const width of [1280,390])test(`all workspace pages have clean copy at ${wid
   if(width===390)await page.getByRole('button',{name:'Open navigation'}).click();
   await page.getByRole('button',{name,exact:true}).click();
   if(width===390)await expect.poll(()=>page.locator('.app-sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
-  await expect(page.getByRole('heading',{name,exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:name==='Dashboard'?'Your GST Workspace':name,exact:true})).toBeVisible();
   expect(await page.locator('body').innerText()).not.toMatch(bad);
   expect(await page.locator('body').innerText()).not.toMatch(/FastAPI|OpenPyXL|backend/i);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);

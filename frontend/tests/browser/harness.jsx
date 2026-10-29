@@ -12,7 +12,7 @@ const params=new URLSearchParams(location.search),screen=params.get('screen')||'
 let content=<MyFiles/>;
 if(screen==='admin')content=<ApprovalAdmin/>;
 if(screen==='email-action')content=<ApprovalConfirmation userId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" decision={params.get('decision')==='rejected'?'rejected':'approved'}/>;
-if(screen==='workspace')content=<Workspace/>;
+if(screen==='workspace')content=<Workspace accountActions={<Account userId="test-user" name="Test Auditor" email="test@example.com" showFiles/>}/>;
 if(screen==='gate')content=<ApprovalGate initial={{ready:true,status:params.get('status')||'pending',email_verified:true,is_admin:false}} error=""><div>Approved workspace content</div></ApprovalGate>;
 if(screen==='register'||location.pathname==='/register')content=<AuthForm mode="register"/>;
 if(screen==='login'||location.pathname==='/login')content=<AuthForm mode="login"/>;

@@ -3,6 +3,7 @@ import {useEffect,useState,useRef} from 'react';
 import {browserClient} from '@/lib/supabase/browser';
 import {AuthForm} from './AuthForm';
 import Link from 'next/link';
+import {ChevronDown,ShieldCheck} from 'lucide-react';
 export function Account({email,name,userId,isAdmin=false,showFiles=false}:{email:string;name:string;userId:string;isAdmin?:boolean;showFiles?:boolean}) {
  const dialog = useRef<HTMLDialogElement>(null);
  const [expired,setExpired]=useState(false),[error,setError]=useState('');
@@ -19,5 +20,6 @@ export function Account({email,name,userId,isAdmin=false,showFiles=false}:{email
   setExpired(false);
  }
  async function logout(){const {error}=await browserClient().auth.signOut();if(error)setError('Unable to sign out. Try again.');else window.location.assign('/login');}
- return <><div className="account-actions"><span className="account-identity" title={email}><span className="account-avatar">{(name||email).slice(0,1).toUpperCase()}</span><span>{name || email}</span></span>{showFiles && <Link href="/my-files">My Files</Link>}{isAdmin && <Link href="/admin">Administration</Link>}<button className="account-signout" onClick={logout}>Sign out</button>{error && <span role="alert">{error}</span>}</div><dialog ref={dialog} className="auth-modal" aria-label="Session expired" onCancel={e=>e.preventDefault()}><div><p>Your session ended. Sign in to continue with your selected workbook.</p><AuthForm mode="login" onSignedIn={resume}/></div></dialog></>;
+ const initials=(name||email).trim().split(/\s+/).filter(Boolean).slice(0,2).map(part=>part[0]).join('').toUpperCase();
+ return <><details className="account-menu"><summary className="account-trigger" aria-label="Open account menu"><span className="account-avatar">{initials}</span><span className="account-label"><strong title={name||email}>{name||email}</strong><small>{isAdmin?'Administrator':'Standard User'}</small></span><ChevronDown className="account-chevron" size={15}/></summary><div className="account-dropdown"><div className="account-email"><ShieldCheck size={15}/><span>{email}</span></div>{showFiles&&<Link href="/my-files">My Files</Link>}{isAdmin&&<Link href="/admin">Administration</Link>}<button className="account-signout" onClick={logout}>Sign out</button>{error&&<span role="alert">{error}</span>}</div></details><dialog ref={dialog} className="auth-modal" aria-label="Session expired" onCancel={e=>e.preventDefault()}><div><p>Your session ended. Sign in to continue with your selected workbook.</p><AuthForm mode="login" onSignedIn={resume}/></div></dialog></>;
 }
