@@ -10,5 +10,5 @@ export default async function MyFilesPage(){
  const {data:{user}}=await (await serverClient()).auth.getUser();
  if(!user)redirect('/login?next=/my-files');
  const approval=await serverApproval();
- return <><Account userId={user.id} email={user.email??''} name={user.user_metadata.full_name??''} isAdmin={!!approval.state&&canManageApprovals(approval.state)} showFiles={!!approval.state&&canUseWorkspace(approval.state)}/><ApprovalGate initial={approval.state} error={approval.error}><MyFiles/></ApprovalGate></>;
+ return <ApprovalGate initial={approval.state} error={approval.error}><MyFiles accountActions={<Account userId={user.id} email={user.email??''} name={user.user_metadata.full_name??''} isAdmin={!!approval.state&&canManageApprovals(approval.state)} showFiles={!!approval.state&&canUseWorkspace(approval.state)}/>} /></ApprovalGate>;
 }

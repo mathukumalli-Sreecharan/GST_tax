@@ -9,7 +9,7 @@ for(const width of [1280,390])test(`clean settings and upload copy at ${width}px
  await page.setViewportSize({width,height:900});await openWorkspace(page);
  if(width===390)await page.getByRole('button',{name:'Open navigation'}).click();
  await page.getByRole('button',{name:'Settings',exact:true}).click();
- if(width===390)await expect.poll(()=>page.locator('.sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+ if(width===390)await expect.poll(()=>page.locator('.app-sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
  await expect(page.getByRole('heading',{name:'Calculation policy'})).toBeVisible();
  for(const text of ['Less than \u20b91','\u20b91 to less than \u20b950','\u20b950 or greater'])await expect(page.getByText(text,{exact:true})).toBeVisible();
  await expect(page.getByText('Workbook preservation',{exact:true})).toHaveCount(0);
@@ -19,7 +19,7 @@ for(const width of [1280,390])test(`clean settings and upload copy at ${width}px
  await page.screenshot({path:testInfo.outputPath(`settings-${width}.png`),fullPage:true,animations:'disabled'});
  if(width===390)await page.getByRole('button',{name:'Open navigation'}).click();
  await page.getByRole('button',{name:'Process Excel',exact:true}).click();
- if(width===390)await expect.poll(()=>page.locator('.sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+ if(width===390)await expect.poll(()=>page.locator('.app-sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
  await expect(page.getByText('Drop an Excel workbook here')).toBeVisible();
  await expect(page.getByRole('button',{name:'Browse files',exact:true})).toBeVisible();
  await expect(page.locator('.upload-meta')).toHaveCount(0);
@@ -33,7 +33,7 @@ for(const width of [1280,390])test(`all workspace pages have clean copy at ${wid
  for(const name of ['Dashboard','Process Excel','Verification','Settings']){
   if(width===390)await page.getByRole('button',{name:'Open navigation'}).click();
   await page.getByRole('button',{name,exact:true}).click();
-  if(width===390)await expect.poll(()=>page.locator('.sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+  if(width===390)await expect.poll(()=>page.locator('.app-sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
   await expect(page.getByRole('heading',{name,exact:true})).toBeVisible();
   expect(await page.locator('body').innerText()).not.toMatch(bad);
   expect(await page.locator('body').innerText()).not.toMatch(/FastAPI|OpenPyXL|backend/i);

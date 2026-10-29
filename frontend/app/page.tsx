@@ -11,5 +11,5 @@ export default async function Page() {
  const {data:{user}} = await (await serverClient()).auth.getUser();
  if (!user) return <AuthFrame><AuthChoices/></AuthFrame>;
  const approval=await serverApproval();
- return <><Account userId={user.id} email={user.email ?? ''} name={user.user_metadata.full_name ?? ''} isAdmin={!!approval.state && canManageApprovals(approval.state)} showFiles={!!approval.state && canUseWorkspace(approval.state)} /><ApprovalGate initial={approval.state} error={approval.error}><Workspace /></ApprovalGate></>;
+ return <ApprovalGate initial={approval.state} error={approval.error}><Workspace accountActions={<Account userId={user.id} email={user.email ?? ''} name={user.user_metadata.full_name ?? ''} isAdmin={!!approval.state && canManageApprovals(approval.state)} showFiles={!!approval.state && canUseWorkspace(approval.state)} />} /></ApprovalGate>;
 }

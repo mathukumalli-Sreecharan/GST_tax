@@ -27,7 +27,7 @@ test('My Files pagination and mobile layout',async({page})=>{
  const queries=[];await page.route('**/api/files?**',route=>{queries.push(route.request().url());return route.fulfill({json:{...list,total:21}});});
  await page.setViewportSize({width:390,height:844});await page.goto('/');await expect(page.getByText(file.output_filename,{exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Next',exact:true}).click();await expect.poll(()=>queries.some(url=>url.includes('offset=20'))).toBe(true);
- await page.getByLabel('Open navigation').click();await expect(page.locator('.sidebar')).toHaveClass(/open/);
+ await page.getByLabel('Open navigation').click();await expect(page.locator('.app-sidebar')).toHaveClass(/open/);
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
 });
 for(const status of ['pending','rejected','revoked'])test(`approval gate blocks ${status} users`,async({page})=>{
@@ -66,7 +66,7 @@ test('Excel upload and mapping retain read-only notice and honest history failur
  await page.route('**/api/excel/process',route=>route.fulfill({json:{review_id:file.id,filename:'audit.xlsx',worksheet:'Sheet',version:1,state:'open',rows:[],excluded_rows:[],decisions:{},progress:{total:1,matched:1,requiring_review:0,verified:0,remaining:0},result:null}}));
  await page.route('**/api/excel/reviews/'+file.id+'/generate',route=>route.fulfill({json:generated}));
  await page.route('**/api/excel/download/**',route=>route.fulfill({body:'synthetic workbook'}));
- await page.goto('/?screen=workspace');await page.getByRole('button',{name:'Skip introduction'}).click();await page.getByRole('button',{name:'Process Excel',exact:true}).click();
+ await page.goto('/?screen=workspace');await page.getByRole('button',{name:'Process Excel',exact:true}).click();
  await page.locator('input[type=file]').setInputFiles({name:'audit.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:Buffer.from('synthetic')});
  await expect(page.getByText(/Read-only source detected/)).toBeVisible();await page.getByRole('button',{name:'Continue to processing'}).click();await page.getByRole('button',{name:'Calculate GST Rates',exact:true}).click();await page.getByRole('button',{name:'Generate Excel',exact:true}).click();await expect(page.getByText(/Permanent save could not be confirmed/)).toBeVisible();
  await expect(page.getByRole('heading',{name:'GST Column Totals'})).toBeVisible();await expect(page.getByText('\u20b9105.00',{exact:true})).toBeVisible();

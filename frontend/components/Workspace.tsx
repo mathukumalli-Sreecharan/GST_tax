@@ -1,26 +1,23 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CellContext, ColumnDef } from "@tanstack/react-table";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import {
-  AlertCircle, ArrowDownToLine, ArrowRight, BadgeCheck, BarChart3, Check, ChevronRight,
-  CircleHelp, FileSpreadsheet, FileWarning, Gauge, Menu, RotateCw, Settings2,
+  AlertCircle, ArrowDownToLine, ArrowRight, BadgeCheck, Check, ChevronRight,
+  CircleHelp, FileSpreadsheet, FileWarning, RotateCw,
   ShieldCheck, Upload, X,
 } from "lucide-react";
 import { TransactionReview } from "@/components/TransactionReview";
 import { DataTable } from "@/components/DataTable";
+import {WorkspaceShell,type WorkspaceNav} from "@/components/WorkspaceShell";
 import Link from 'next/link';
 import { downloadResult, inspectWorkbook, processWorkbook } from "@/lib/api";
 import type { ColumnMeta, InspectResponse, ProcessResponse, ResultRow, SheetInfo, ReviewSession } from "@/lib/types";
 
-type PageName = "Dashboard" | "Process Excel" | "Verification" | "Settings";
-const pages: { name: PageName; icon: typeof Gauge }[] = [
-  { name: "Dashboard", icon: Gauge }, { name: "Process Excel", icon: FileSpreadsheet },
-  { name: "Verification", icon: FileWarning }, { name: "Settings", icon: Settings2 },
-];
+type PageName = Exclude<WorkspaceNav,"My Files">;
 const mappingSchema = z.object({ invoiceCol: z.number().int().positive(), taxableCol: z.number().int().positive() })
   .refine((value) => value.invoiceCol !== value.taxableCol, { message: "Invoice Value and Taxable Value must use different columns." });
 type MappingValues = z.infer<typeof mappingSchema>;
@@ -46,27 +43,13 @@ function formatDifference(value: string) {
     : value;
 }
 
-function OpeningIntro({ visible, onSkip }: { visible: boolean; onSkip: () => void }) {
-  return <div className={`opening-intro ${visible ? "visible" : "leaving"}`} aria-label="GST Ledger Studio introduction">
-    <div className="opening-grid" aria-hidden="true" />
-    <div className="opening-brand">
-      <span className="opening-mark"><FileSpreadsheet size={27} strokeWidth={1.25} /></span>
-      <span className="opening-rule" />
-      <div className="opening-name">GST LEDGER STUDIO</div>
-      <div className="opening-subtitle">FINANCIAL DATA AUTOMATION</div>
-      <span className="opening-rule bottom" />
-    </div>
-    <button type="button" className="intro-skip" onClick={onSkip}>Skip introduction</button>
-  </div>;
-}
 function metric(label: string, value: number, note: string, tone = "") {
   return <div className="metric" key={label}><div className="metric-label">{label}</div><div className="metric-value" style={tone ? { color: tone } : undefined}>{value.toLocaleString()}</div><div className="metric-note">{note}</div></div>;
 }
 function colLabel(column: ColumnMeta) { return `${column.letter} · ${column.header}`; }
 
-export default function Home() {
+export default function Home({accountActions}:{accountActions?:ReactNode}) {
   const [page, setPage] = useState<PageName>("Dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<InspectResponse | null>(null);
   const [sheetName, setSheetName] = useState("");
@@ -82,32 +65,20 @@ export default function Home() {
   const [rateAction, setRateAction] = useState<"keep" | "recalculate">("keep");
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const [selectedVerification, setSelectedVerification] = useState<ResultRow | null>(null);
-  const [introVisible, setIntroVisible] = useState(false);
-  const [introSequence, setIntroSequence] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const introKey = "gst-ledger-studio:intro:v1";
-    try {
-      if (window.sessionStorage.getItem(introKey) || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-      window.sessionStorage.setItem(introKey, "shown");
-    } catch {
-      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    }
-    setIntroVisible(true);
-    setIntroSequence(true);
-    window.setTimeout(() => setIntroVisible(false), 2300);
-    window.setTimeout(() => setIntroSequence(false), 2600);
-  }, []);
 
   const [review, setReview] = useState<ReviewSession | null>(null);
   const [monetaryColumns, setMonetaryColumns] = useState<Record<string, number | null>>({});
+  useEffect(()=>{
+    const requested=new URLSearchParams(window.location.search).get('page');
+    if(requested==='Dashboard'||requested==='Process Excel'||requested==='Verification'||requested==='Settings')setPage(requested);
+  },[]);
   const activeSheet: SheetInfo | undefined = inspection?.sheets.find((sheet) => sheet.name === sheetName);
   const mappingForm = useForm<MappingValues>({ resolver: zodResolver(mappingSchema), defaultValues: { invoiceCol: 1, taxableCol: 2 } });
   const invoiceCol = mappingForm.watch("invoiceCol");
   const taxableCol = mappingForm.watch("taxableCol");
 
-  const navigate = (next: PageName) => { setPage(next); setSidebarOpen(false); setError(""); setSuccess(""); };
+  const navigate = (next: PageName) => { setPage(next); setError(""); setSuccess(""); };
 
   const selectFile = async (newFile: File | undefined) => {
     if (!newFile) return;
@@ -335,12 +306,8 @@ export default function Home() {
   const settings = () => <><div className="page-head"><div><div className="eyebrow">CALCULATION POLICY</div><h1>Settings</h1><p className="subtext">GST calculation rules for your review.</p></div><ShieldCheck size={18} color="#24744c" /></div><section className="panel"><div className="panel-head"><h2>Calculation policy</h2></div><div className="panel-body"><Setting label="Supported GST rates" value="5%, 12%, 18%, and 28%" /><Setting label="Automatic match tolerance" value="Less than ₹1" /><Setting label="Verification threshold" value="₹1 to less than ₹50" /><Setting label="Unmatched threshold" value="₹50 or greater" /></div></section></>;
 
 
-  return <><OpeningIntro visible={introVisible} onSkip={() => { setIntroVisible(false); setIntroSequence(false); }} /><div className={`shell ${introSequence ? "intro-reveal" : ""}`}>
-    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="brand"><span className="brand-mark"><BarChart3 size={16} /></span><span>GST Ledger Studio</span></div><div className="nav-label">Workspace</div><nav className="nav-list" aria-label="Main navigation">{pages.map(({ name, icon: Icon }) => <button key={name} className={`nav-item ${page === name ? "active" : ""}`} onClick={() => navigate(name)}><Icon size={15} strokeWidth={1.8} />{name}</button>)}<Link className="nav-item" href="/my-files"><FileSpreadsheet size={15}/>My Files</Link></nav></aside>
-    <main className="main"><header className="topbar"><div style={{ display: "flex", alignItems: "center", gap: 10 }}><button className="btn btn-small mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={15} /></button><div><div className="top-title">{page}</div><div className="top-subtitle">{pageText[page]}</div></div></div><div className="top-right"><span className="file-chip" title={file?.name}>{file?.name ?? "No workbook selected"}</span></div></header>
-      <div className="content">{page === "Dashboard" && dashboard()}{page === "Process Excel" && processPage()}{page === "Verification" && verification()}{page === "Settings" && settings()}</div>
-    </main>
-  </div></>;
+  const view=page === "Dashboard" ? dashboard() : page === "Process Excel" ? processPage() : page === "Verification" ? verification() : settings();
+  return <WorkspaceShell active={page} subtitle={pageText[page]} accountActions={accountActions} headerExtra={<span className="file-chip" title={file?.name}>{file?.name ?? "No workbook selected"}</span>} onNavigate={next=>{if(next!=='My Files')navigate(next);}}>{view}</WorkspaceShell>;
 }
 
 function Detail({ label, value }: { label: string; value: string }) { return <div className="detail-item"><div className="detail-label">{label}</div><div className="detail-value">{value}</div></div>; }
