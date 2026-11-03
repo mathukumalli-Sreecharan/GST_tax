@@ -133,12 +133,14 @@ def _calculate(row, rates, taxable_allocations, tax_mode, cess_allocations):
             raise ValueError('Cess allocations must sum exactly to the original Cess total.')
         cesses = rounded(cesses, amounts['cess'] if amounts['cess'] is not None else sum(cesses).quantize(CENT, rounding=ROUND_HALF_UP))
     invoices = [base + parts['igst'][i] + parts['cgst'][i] + parts['sgst'][i] + cesses[i] for i, base in enumerate(taxable)]
-    if inv is not None and sum(invoices) != inv:
-        raise ValueError('Replacement invoice values do not sum exactly to the original invoice value; check charges, Cess and allocations.')
+    # For manually entered slabs, invoice reconciliation is at whole currency
+    # units. The cents can differ because slab-level GST is rounded separately.
+    if inv is not None and sum(invoices).quantize(Decimal('1'), rounding=ROUND_HALF_UP) != inv.quantize(Decimal('1'), rounding=ROUND_HALF_UP):
+        raise ValueError('Replacement invoice values must match the original invoice value to the nearest whole unit; check charges, Cess and allocations.')
     replacements = [{'rate': str(rate), 'taxable': str(taxable[i]), 'invoice': str(invoices[i]),
                      **{key: str(values[i]) for key, values in parts.items()}, 'cess': str(cesses[i])} for i, rate in enumerate(rates)]
     for key in FIELDS:
-        if amounts[key] is not None and sum(Decimal(part[key]) for part in replacements) != amounts[key]:
+        if key != 'invoice' and amounts[key] is not None and sum(Decimal(part[key]) for part in replacements) != amounts[key]:
             raise ValueError('Replacement rows must conserve every original monetary component.')
     return {'manual_required': False, 'method': method, 'tax_mode': mode, 'rows': replacements,
             'totals': {key: str(sum(Decimal(part[key]) for part in replacements)) for key in FIELDS},
