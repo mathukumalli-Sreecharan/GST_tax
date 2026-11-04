@@ -14,6 +14,7 @@ from backend.files import storage_request
 BUCKET = 'gst-review-workbooks'
 MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
+TARGET_REVIEW_RESERVATIONS = (209_715_200, 314_572_800)
 logger = logging.getLogger(__name__)
 
 
@@ -201,3 +202,78 @@ def cleanup_reviews(limit=20):
         if not re.fullmatch(r'[0-9a-f-]{36}/[0-9a-f-]{36}/(?:source\.xlsx|[0-9a-f-]{36}/(?:output\.xlsx|report\.csv))',path):
             raise HTTPException(503,'Invalid orphan cleanup path; deletion refused.')
         storage_request('DELETE','object/'+BUCKET,json.dumps({'prefixes':[path]}).encode(),content_type='application/json')
+
+
+def deleted_review_paths(item, expected_id):
+    """Return exact object keys for a claimed, deleted review only."""
+    review_id=identity(expected_id)
+    if identity(item.get('id'))!=review_id or item.get('state')!='deleted':
+        raise HTTPException(409,'Claimed record does not match the requested deleted review.')
+    owner=identity(item.get('owner'))
+    tokens=item.get('artifact_tokens')
+    if not isinstance(tokens,list) or len(tokens)>8:
+        raise HTTPException(503,'Target review artifact tokens could not be validated.')
+    normalized=[identity(token) for token in tokens]
+    if len(set(normalized))!=len(normalized):
+        raise HTTPException(503,'Target review contains duplicate artifact tokens; cleanup was stopped.')
+    base=f'{owner}/{review_id}'
+    paths=[base+'/source.xlsx']
+    for token in normalized:
+        paths.extend([base+'/'+token+'/output.xlsx',base+'/'+token+'/report.csv'])
+    if any(not re.fullmatch(r'[0-9a-f-]{36}/[0-9a-f-]{36}/(?:source\.xlsx|[0-9a-f-]{36}/(?:output\.xlsx|report\.csv))',path) for path in paths):
+        raise HTTPException(503,'Target review object path failed validation; cleanup was stopped.')
+    return paths
+
+
+def _listed_review_names(prefix):
+    raw=storage_request('POST','object/list/'+BUCKET,
+                        json.dumps({'prefix':prefix,'limit':21,'offset':0,
+                                    'sortBy':{'column':'name','order':'asc'}}).encode(),
+                        content_type='application/json')
+    try:entries=json.loads(raw)
+    except (TypeError,ValueError):raise HTTPException(503,'Target review Storage listing could not be verified.') from None
+    if not isinstance(entries,list) or len(entries)>20 or any(not isinstance(entry,dict) or not isinstance(entry.get('name'),str) for entry in entries):
+        raise HTTPException(503,'Target review Storage listing could not be verified.')
+    names=[entry['name'] for entry in entries]
+    if len(set(names))!=len(names):raise HTTPException(503,'Target review Storage listing contains duplicate names.')
+    return names
+
+
+def _verify_deleted_review_objects(item):
+    owner,review_id=identity(item['owner']),identity(item['id'])
+    base=f'{owner}/{review_id}'
+    tokens=[identity(token) for token in item['artifact_tokens']]
+    root_names=_listed_review_names(base)
+    if set(root_names)-set(tokens+['source.xlsx']):
+        raise HTTPException(503,'Unexpected object exists under the target review; cleanup was not finalized.')
+    if 'source.xlsx' in root_names:
+        raise HTTPException(503,'Target source object remains in Storage; cleanup was not finalized.')
+    for token in tokens:
+        names=_listed_review_names(base+'/'+token)
+        if names:
+            raise HTTPException(503,'Target artifact object remains in Storage; cleanup was not finalized.')
+
+
+def cleanup_deleted_reviews(target_reservations):
+    """Clean exactly two explicitly supplied deleted review IDs; never scan the queue."""
+    if not isinstance(target_reservations,dict) or len(target_reservations)!=2:
+        raise HTTPException(400,'Provide exactly two target review IDs and their expected reservations.')
+    normalized={identity(review_id):reserved for review_id,reserved in target_reservations.items()}
+    if len(normalized)!=2 or any(type(reserved) is not int for reserved in normalized.values()) or sorted(normalized.values())!=list(TARGET_REVIEW_RESERVATIONS):
+        raise HTTPException(400,'The two target reservations do not match the specified 200 MiB and 300 MiB records.')
+    outcomes=[]
+    for review_id,expected_reserved in normalized.items():
+        try:
+            item=rpc('review_cleanup_claim_target',{'p_id':review_id,'p_expected_reserved':expected_reserved})
+            if not isinstance(item,dict):raise HTTPException(503,'Target review cleanup claim was not confirmed.')
+            paths=deleted_review_paths(item,review_id)
+            if item.get('artifact_reserved')!=expected_reserved:
+                raise HTTPException(409,'Target review reservation changed; cleanup was stopped.')
+            storage_request('DELETE','object/'+BUCKET,json.dumps({'prefixes':paths}).encode(),content_type='application/json')
+            _verify_deleted_review_objects(item)
+            finished=rpc('review_cleanup_finish_target',{'p_id':review_id,'p_token':identity(item.get('cleanup_token'))})
+            if finished is not True:raise HTTPException(409,'Target review cleanup lease was stale; the database record was retained.')
+            outcomes.append({'review_id':review_id,'cleaned':True,'paths':paths})
+        except HTTPException as exc:
+            outcomes.append({'review_id':review_id,'cleaned':False,'detail':str(exc.detail)})
+    return {'reviews':outcomes}

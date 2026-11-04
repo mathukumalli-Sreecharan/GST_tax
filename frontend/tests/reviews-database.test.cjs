@@ -30,6 +30,7 @@ test('durable reviews: additive migration, private objects, versions, leases, ex
   const notifications=await q('select * from public.approval_notifications order by id');
   await db.exec(fs.readFileSync('../supabase/migrations/007_durable_excel_reviews.sql','utf8'));
   await db.exec(fs.readFileSync('../supabase/migrations/008_review_artifact_reconciliation.sql','utf8'));
+  await db.exec(fs.readFileSync('../supabase/migrations/009_targeted_deleted_review_cleanup.sql','utf8'));
   await t.test('upgrade preserves approvals, owner and frozen notification records',async()=>{
    assert.deepEqual(await q('select * from public.user_approvals order by user_id'),approvals);
    assert.deepEqual(await q('select * from public.approval_notifications order by id'),notifications);
@@ -37,7 +38,7 @@ test('durable reviews: additive migration, private objects, versions, leases, ex
   });
   await t.test('every review definer has an empty search path and service-only execute grants',async()=>{
    const functions=await q("select p.oid::regprocedure::text signature,p.prosecdef,p.proconfig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'review_%'");
-   assert.equal(functions.length,10);
+   assert.equal(functions.length,12);
    for(const fn of functions){
     assert.equal(fn.prosecdef,true);assert.ok(fn.proconfig.includes('search_path=""'));
     for(const browser of ['anon','authenticated'])assert.equal((await q('select has_function_privilege($1,$2,\'EXECUTE\') allowed',[browser,fn.signature]))[0].allowed,false);
@@ -177,6 +178,45 @@ test('durable reviews: additive migration, private objects, versions, leases, ex
    const blockedOpen=(await q('select public.review_activate($1,$2) item',[blocked,other]))[0].item;
    await assert.rejects(change(blockedOpen,{state:'generating',lease_token:'dddddddd-dddd-4ddd-8ddd-dddddddddddd'},other),/artifact quota reached/);
    assert.equal((await q('select public.review_get($1,$2) item',[record.id,user]))[0].item.artifact_reserved,100*1024*1024);
+  });
+  await t.test('targeted deleted cleanup claims only the exact eligible IDs and fences finalization',async()=>{
+   const target1='10101010-1010-4010-8010-101010101010',target2='20202020-2020-4020-8020-202020202020';
+   const otherDeleted='30303030-3030-4030-8030-303030303030',openId='40404040-4040-4040-8040-404040404040';
+   const generatedId='50505050-5050-4050-8050-505050505050',cleanupBusy='60606060-6060-4060-8060-606060606060';
+   const leaseBusy='70707070-7070-4070-8070-707070707070';
+   const insert=async(rid,state,reserved,cleanupUntil=null,leaseUntil=null,tokens='[]')=>q(
+    'insert into public.excel_reviews(id,owner,filename,source_size,source_hash,options,analysis,decisions,state,artifact_reserved,artifact_tokens,cleanup_until,lease_until) values($1,$2,$3,1000,$4,\'{}\',\'{}\',\'{}\',$5,$6,$7,$8,$9)',
+    [rid,user,'target.xlsx','a'.repeat(64),state,reserved,tokens,cleanupUntil,leaseUntil]);
+   await role('postgres');
+   await insert(target1,'deleted',314572800,null,null,JSON.stringify([token]));
+   await insert(target2,'deleted',209715200,null,null,JSON.stringify([token2]));
+   await insert(otherDeleted,'deleted',1000);
+   await insert(openId,'open',0);
+   await insert(generatedId,'generated',1000);
+   const now=Number((await q('select extract(epoch from now()) n'))[0].n);
+   await insert(cleanupBusy,'deleted',1000,now+300);
+   await insert(leaseBusy,'deleted',1000,null,now+300);
+   const leases=await q('select id,cleanup_until,lease_until from public.excel_reviews where id=any($1::uuid[])',[[cleanupBusy,leaseBusy]]);
+   assert.ok(leases.find(row=>row.id===cleanupBusy).cleanup_until>now,JSON.stringify(leases));
+   assert.ok(leases.find(row=>row.id===leaseBusy).lease_until>now,JSON.stringify(leases));
+   await role('service_role');
+   const claimed1=(await q('select public.review_cleanup_claim_target($1,$2) item',[target1,314572800]))[0].item;
+   const claimed2=(await q('select public.review_cleanup_claim_target($1,$2) item',[target2,209715200]))[0].item;
+   assert.equal(claimed1.id,target1);assert.equal(claimed1.state,'deleted');
+   assert.equal(claimed2.id,target2);assert.equal(claimed2.state,'deleted');
+   await assert.rejects(q('select public.review_cleanup_claim_target($1,$2)',[openId,0]),/invalid/);
+   await assert.rejects(q('select public.review_cleanup_claim_target($1,$2)',[openId,1000]),/not deleted/);
+   await assert.rejects(q('select public.review_cleanup_claim_target($1,$2)',[generatedId,1000]),/not deleted/);
+   await assert.rejects(q('select public.review_cleanup_claim_target($1,$2)',[cleanupBusy,1000]),/active cleanup lease/);
+   await assert.rejects(q('select public.review_cleanup_claim_target($1,$2)',[leaseBusy,1000]),/active generation lease/);
+   await assert.rejects(q('select public.review_cleanup_claim_target($1,$2)',[otherDeleted,209715200]),/reservation changed/);
+   assert.equal((await q('select public.review_cleanup_finish_target($1,$2) done',[target1,claimed1.cleanup_token]))[0].done,true);
+   assert.equal((await q('select public.review_cleanup_finish_target($1,$2) done',[target2,claimed2.cleanup_token]))[0].done,true);
+   assert.equal((await q('select public.review_cleanup_finish_target($1,$2) done',[target1,claimed1.cleanup_token]))[0].done,false);
+   await role('postgres');
+   const remaining=(await q('select id,state from public.excel_reviews where id=any($1::uuid[]) order by id',[[otherDeleted,openId,generatedId,cleanupBusy,leaseBusy]])).map(row=>row.id);
+   assert.deepEqual(new Set(remaining),new Set([otherDeleted,openId,generatedId,cleanupBusy,leaseBusy]));
+   await role('service_role');
   });
  }finally{await db.close();}
 });
