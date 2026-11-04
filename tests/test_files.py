@@ -1,5 +1,5 @@
 from review_helpers import reviewed_post
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from io import BytesIO
 import json
 from uuid import uuid4
@@ -30,7 +30,7 @@ def history(monkeypatch):
                   'file_size':values['p_size'],'processing_summary':values['p_summary'],
                   'verification_count':values['p_warnings'],'state':'uploading',
                   'created_at':datetime.now(timezone.utc).isoformat(),
-                  'expires_at':(datetime.now(timezone.utc)+timedelta(days=30)).isoformat()}
+                  'expires_at':None}
             rows[identity]=item;return item
         if name=='claim_expired_generated_files':
             return [dict(row) for row in rows.values() if row.get('claimable')]
@@ -40,7 +40,7 @@ def history(monkeypatch):
             return None
         if name=='list_generated_files':
             files=[row for row in rows.values() if row['user_id']==values['p_user'] and row['state']=='ready']
-            return {'files':files,'total':len(files),'retention_days':30}
+            return {'files':files,'total':len(files),'retention_days':None}
         row=rows.get(identity)
         if row is None or row['user_id']!=values.get('p_user'):
             raise HTTPException(404,'File not found')
@@ -96,7 +96,7 @@ def test_successful_save_is_private_and_downloads_across_sessions(history):
     RESULTS.clear()
     second=TestClient(app)
     listing=second.get('/api/files').json()
-    assert listing['files'][0]['id']==identity and listing['retention_days']==30
+    assert listing['files'][0]['id']==identity and listing['retention_days'] is None
     for path in (f'/api/files/{identity}/download',f'/api/excel/download/{identity}'):
         downloaded=second.get(path)
         assert downloaded.status_code==200

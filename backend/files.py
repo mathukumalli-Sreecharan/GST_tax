@@ -69,8 +69,8 @@ def save_generated_file(file_id: str, user_id: str, original_name: str, output: 
             "p_original": original_name, "p_output": output_name or "updated_" + original_name,
             "p_size": output.stat().st_size, "p_summary": summary, "p_warnings": warnings})
         storage_request("POST", f"object/{BUCKET}/{object_path(item)}", output.read_bytes())
-        saved = rpc("complete_generated_file", {"p_id": identity, "p_user": user_id})
-        return {"saved": True, "id": identity, "expires_at": saved["expires_at"]}
+        rpc("complete_generated_file", {"p_id": identity, "p_user": user_id})
+        return {"saved": True, "id": identity, "expires_at": None}
     except Exception:
         # Do not erase the reservation: scheduled cleanup must retain knowledge of
         # the path if Storage succeeded but finalization or its response was lost.
@@ -103,7 +103,13 @@ def list_files(response: Response, search: str = Query("", max_length=200),
                sort: Literal["newest", "oldest", "name", "size"] = "newest",
                offset: int = Query(0, ge=0, le=1000000), user_id: str = Depends(require_approved_user)):
     response.headers["Cache-Control"] = "private, no-store"
-    return rpc("list_generated_files", {"p_user": user_id, "p_search": search, "p_sort": sort, "p_offset": offset})
+    payload = rpc("list_generated_files", {"p_user": user_id, "p_search": search, "p_sort": sort, "p_offset": offset})
+    if isinstance(payload, dict):
+        files = payload.get("files") or []
+        for item in files:
+            item["expires_at"] = None
+        payload["retention_days"] = None
+    return payload
 
 
 @router.get("/{file_id}/download")

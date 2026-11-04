@@ -136,7 +136,7 @@ def _calculate(row, rates, taxable_allocations, tax_mode, cess_allocations):
     # For manually entered slabs, invoice reconciliation is at whole currency
     # units. The cents can differ because slab-level GST is rounded separately.
     if inv is not None and sum(invoices).quantize(Decimal('1'), rounding=ROUND_HALF_UP) != inv.quantize(Decimal('1'), rounding=ROUND_HALF_UP):
-        raise ValueError('Replacement invoice values must match the original invoice value to the nearest whole unit; check charges, Cess and allocations.')
+        raise ValueError('invoice values do not sum; replacement invoice values must match the original invoice value to the nearest whole unit; check charges, Cess and allocations.')
     replacements = [{'rate': str(rate), 'taxable': str(taxable[i]), 'invoice': str(invoices[i]),
                      **{key: str(values[i]) for key, values in parts.items()}, 'cess': str(cesses[i])} for i, rate in enumerate(rates)]
     for key in FIELDS:

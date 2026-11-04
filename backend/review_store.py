@@ -17,8 +17,14 @@ MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 def rpc(name,payload):
     try:return service_rpc(name,payload)
     except HTTPException as exc:
-        messages={404:'Review session not found or expired.',403:'Approved review access required.',
-                  409:'Review changed, a storage quota was reached, or an action is unsafe. Reload the review or delete an old session and retry.'}
+        messages={404:'Review session not found or expired.',403:'Approved review access required.'}
+        if exc.status_code == 409:
+            # The shared backend RPC wrapper deliberately hides database error
+            # bodies. PostgreSQL P0001 currently arrives as this safe generic
+            # detail; in review RPCs it means a storage/attempt quota was hit.
+            if 'approval action is not allowed' in str(exc.detail).lower():
+                raise HTTPException(409, 'Private review storage or generation-attempt quota reached. Delete an old review from My Workbooks, then reload this review and try again.') from None
+            raise HTTPException(409, 'Review changed or generation could not be committed. Reload the review and retry; if generation started, check its status before trying again.') from None
         if exc.status_code in messages:raise HTTPException(exc.status_code,messages[exc.status_code]) from None
         if exc.status_code==503:raise HTTPException(503,'Private review persistence is unavailable or migration 007 is missing. Check the server-only Supabase configuration.') from None
         raise

@@ -5,7 +5,7 @@ An approval-controlled private beta for Excel GST automation, with the existing 
 ## Private beta release
 
 - Apply only new migrations 003 and 004 to an already configured approval project; they preserve the designated owner.
-- My Files (`/my-files`) retains private generated workbooks for 30 days, across sessions and devices.
+- My Files (`/my-files`) keeps private generated workbooks until you delete them, across sessions and devices.
 - Every processing, history, download and deletion request requires a currently approved, verified account.
 - Configure the independent Render maintenance cron before inviting auditors.
 - Follow [BETA_DEPLOYMENT.md](BETA_DEPLOYMENT.md) for Vercel/Render settings, storage policies, security tasks and live acceptance.
