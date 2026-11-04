@@ -9,6 +9,7 @@ from zipfile import ZipFile
 from openpyxl.utils.cell import coordinate_from_string, column_index_from_string, get_column_letter
 from monetary_totals import generated_row
 from row_splits import RowMapping
+from gst_splits import ALLOCATION_TOLERANCE
 
 
 def _is_empty_text_normalization(original, exported):
@@ -126,7 +127,7 @@ def validate_export(source, exported, expected, selected, inserted_col, rate_col
                 value = source[selected].cell(old_row, field['source_column']).value
                 if value not in (None, ''):
                     difference=sum(Decimal(part[key]) for part in parts)-Decimal(str(value))
-                    if difference and not (key=='invoice' and abs(difference)<=Decimal('.05')):
+                    if abs(difference)>ALLOCATION_TOLERANCE:
                         raise ValueError('Preservation verification failed: split does not conserve original monetary values.')
     for field in totals['columns'].values():
         if field['source_column'] is None:

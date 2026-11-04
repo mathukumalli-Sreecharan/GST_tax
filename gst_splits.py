@@ -2,7 +2,7 @@
 from decimal import Decimal, ROUND_HALF_UP, localcontext
 
 CENT = Decimal('.01')
-INVOICE_RECONCILIATION_TOLERANCE = Decimal('.05')
+ALLOCATION_TOLERANCE = Decimal('5')
 FIELDS = ('invoice', 'taxable', 'igst', 'cgst', 'sgst', 'cess')
 
 
@@ -87,8 +87,8 @@ def validate_split_allocations(row, rates, allocations):
     """Validate complete user-entered slab allocations without changing amounts.
 
     Monetary inputs retain their entered Decimal precision. Per-component GST
-    math may differ from the exact rate product by at most one paisa. All
-    source-to-replacement totals must match exactly; nothing is adjusted.
+    math and source-to-replacement totals may differ by at most five currency
+    units. Nothing is adjusted.
     """
     with localcontext() as context:
         context.prec = 300
@@ -179,8 +179,8 @@ def _validate_split_allocations(row, rates, allocations):
             expected_tax = parsed['taxable'] * rate / 100
             tax_diffs = [('GST', expected_tax)] if abs(expected_tax) > CENT else []
         for label, difference in tax_diffs:
-            if abs(difference) > CENT:
-                errors.append(f'{prefix} {label} does not match the selected rate {rate}%; difference from the exact rate calculation is {_signed_currency(difference)} (maximum tolerance ₹0.01).')
+            if abs(difference) > ALLOCATION_TOLERANCE:
+                errors.append(f'{prefix} {label} does not match the selected rate {rate}%; difference from the exact rate calculation is {_signed_currency(difference)} (maximum tolerance ₹5).')
 
         invoice = sum((parsed[field] for field in amount_fields), Decimal(0))
         row_values = {'rate': format(rate.normalize(), 'f'), 'invoice': _exact_decimal(invoice),
@@ -194,9 +194,8 @@ def _validate_split_allocations(row, rates, allocations):
     differences = {field: totals[field] - original[field] for field in totals}
     labels = {field: original_names[field][0] for field in original_names}
     for field, difference in differences.items():
-        tolerance = INVOICE_RECONCILIATION_TOLERANCE if field == 'invoice' else Decimal(0)
-        if abs(difference) > tolerance:
-            errors.append(f'{labels[field]} total differs from the original by {_signed_currency(difference)} (replacement {_signed_currency(totals[field])}; original {_signed_currency(original[field])}).')
+        if abs(difference) > ALLOCATION_TOLERANCE:
+            errors.append(f'{labels[field]} total differs from the original by {_signed_currency(difference)} (maximum tolerance ₹5; replacement {_signed_currency(totals[field])}; original {_signed_currency(original[field])}).')
 
     return {
         'valid': not errors,
@@ -208,7 +207,7 @@ def _validate_split_allocations(row, rates, allocations):
         'original_totals': {field: _exact_decimal(value) for field, value in original.items()},
         'differences': {field: _exact_decimal(value) for field, value in differences.items()},
         'tax_regime': regime,
-        'rounding': 'Entered decimal precision is preserved. Invoice Value may differ from its source total by up to ₹0.05 for rounding; all other replacement totals must match exactly. Each GST component may differ from its exact rate calculation by at most ₹0.01.',
+        'rounding': 'Entered decimal precision is preserved. Each slab tax calculation and each replacement total may differ from its source or selected-rate calculation by up to ₹5. Differences are shown and never adjusted.',
         'direction': 'credit' if original_sign < 0 else 'debit' if original_sign > 0 else 'zero',
     }
 

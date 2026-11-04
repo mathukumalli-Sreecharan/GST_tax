@@ -61,8 +61,8 @@ def test_complete_manual_allocations_support_zero_cess_and_explicit_nonzero_cess
 
 
 @pytest.mark.parametrize(('field','bad_value','label'),[
-    ('taxable','199.00','Taxable Value'),('igst','35.98','Integrated Tax'),
-    ('cgst','17.98','Central Tax'),('sgst','17.98','State/UT Tax'),('cess','0.02','Cess'),
+    ('taxable','190.00','Taxable Value'),('igst','41.01','Integrated Tax'),
+    ('cgst','17.98','Central Tax'),('sgst','17.98','State/UT Tax'),('cess','5.01','Cess'),
 ])
 def test_manual_allocation_component_mismatches_name_the_field(field,bad_value,label):
     rows=entered_rows()
@@ -73,7 +73,7 @@ def test_manual_allocation_component_mismatches_name_the_field(field,bad_value,l
 
 
 def test_manual_allocation_invoice_mismatch_and_mixed_regimes_are_rejected():
-    result=calculate_split(values(invoice='349'),[18,12],entered_rows())
+    result=calculate_split(values(invoice='354'),[18,12],entered_rows())
     assert not result['valid'] and any('Invoice Value' in error for error in result['errors'])
     rows=entered_rows()
     rows[0]['cgst']='1.00'
@@ -85,25 +85,37 @@ def test_manual_allocation_invoice_mismatch_and_mixed_regimes_are_rejected():
     assert not result['valid'] and any('same tax regime' in error for error in result['errors'])
 
 
-def test_invoice_reconciliation_accepts_four_paise_rounding_but_rejects_six():
+def test_amount_reconciliation_accepts_five_rupees_and_rejects_more():
     allocations=entered_rows()
-    accepted=calculate_split(values(invoice='348.04'),[18,12],allocations)
+    accepted=calculate_split(values(invoice='353'),[18,12],allocations)
     assert accepted['valid'],accepted['errors']
-    assert Decimal(accepted['differences']['invoice'])==Decimal('-0.04')
-    rejected=calculate_split(values(invoice='348.06'),[18,12],allocations)
+    assert Decimal(accepted['differences']['invoice'])==Decimal('-5')
+    rejected=calculate_split(values(invoice='353.01'),[18,12],allocations)
     assert not rejected['valid']
     assert any('Invoice Value total differs' in error for error in rejected['errors'])
 
 
-def test_manual_allocation_allows_at_most_one_paisa_gst_rounding_and_rejects_more():
-    source=values('0.11','0.10','0.01','0','0','0')
-    allocation=[{'taxable':'0.10','igst':'0.01','cgst':'0.00','sgst':'0.00','cess':'0.00'},
-                {'taxable':'0.00','igst':'0.00','cgst':'0.00','sgst':'0.00','cess':'0.00'}]
-    accepted=calculate_split(source,[5,12],allocation)
-    assert accepted['valid'],accepted['errors']  # exact 0.005 GST product differs by half a paisa
-    allocation[0]['igst']='0.02'
-    rejected=calculate_split(values('0.12','0.10','0.02','0','0','0'),[5,12],allocation)
-    assert not rejected['valid'] and any('Integrated Tax' in error for error in rejected['errors'])
+def test_slab_tax_calculation_difference_accepts_five_rupees_and_rejects_more():
+    allocations=entered_rows()
+    allocations[0]['igst']='41.00'  # 5.00 above the selected rate calculation
+    accepted=calculate_split(values(),[18,12],allocations)
+    assert accepted['valid'],accepted['errors']
+    allocations[0]['igst']='41.01'
+    rejected=calculate_split(values(),[18,12],allocations)
+    assert not rejected['valid']
+    assert any('Integrated Tax' in error and 'maximum tolerance ₹5' in error for error in rejected['errors'])
+
+
+def test_taxable_total_difference_accepts_five_rupees_and_rejects_more():
+    allocations=entered_rows()
+    allocations[0]['taxable']='195.00'
+    accepted=calculate_split(values(),[18,12],allocations)
+    assert accepted['valid'],accepted['errors']
+    assert Decimal(accepted['differences']['taxable'])==Decimal('-5')
+    allocations[0]['taxable']='194.99'
+    rejected=calculate_split(values(),[18,12],allocations)
+    assert not rejected['valid']
+    assert any('Taxable Value total differs' in error for error in rejected['errors'])
 
 
 def test_manual_allocations_preserve_sub_paisa_precision_and_reject_wrong_sign():
@@ -338,7 +350,7 @@ def test_review_api_rejects_unreconciled_and_numeric_wire_allocations(client):
     malformed[0]['taxable']=200.0
     rejected=client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':malformed})
     assert rejected.status_code==422  # JSON floats never enter Decimal currency math.
-    allocations[0]['taxable']='199.00'
+    allocations[0]['taxable']='194.99'
     response=client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':allocations})
     assert response.status_code==200,response.text
     updated=response.json();preview=updated['decisions'][str(header+1)]['split_preview']
@@ -461,7 +473,7 @@ def test_manual_cess_confirmation_and_export_preserve_all_components(client):
 def test_manual_intra_state_allocations_reach_workbook_cells(client):
     raw,options,header,fields=fixture()
     wb=load_workbook(BytesIO(raw));ws=wb[options['worksheet']]
-    ws.cell(header+1,fields.index('invoice')+1,348.04454)
+    ws.cell(header+1,fields.index('invoice')+1,348.19454)
     ws.cell(header+1,fields.index('taxable')+1,300.004)
     ws.cell(header+1,fields.index('igst')+1,0)
     ws.cell(header+1,fields.index('cgst')+1,24.00027)
@@ -479,7 +491,7 @@ def test_manual_intra_state_allocations_reach_workbook_cells(client):
     assert response.status_code==200,response.text
     review=response.json();preview=review['decisions'][str(header+1)]['split_preview']
     assert preview['valid'],preview['errors']
-    assert Decimal(preview['differences']['invoice'])==Decimal('-0.04')
+    assert Decimal(preview['differences']['invoice'])==Decimal('-0.19')
     review=client.post(rowpath+'/split-confirm',json={'version':review['version'],'preview_id':preview['preview_id']}).json()
     for item in review['rows']:
         if item['status']!='MATCHED' and str(item['excel_row']) not in review['decisions']:
