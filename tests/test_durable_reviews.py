@@ -156,6 +156,25 @@ def test_source_and_export_integrity_are_rechecked_and_errors_do_not_publish(rem
     assert client.get(path+'/download').status_code==503
 
 
+def test_generation_quota_error_is_specific_and_keeps_saved_decisions(remote,monkeypatch):
+    client,provider=remote;review,_,header=start(client);review=complete(client,review,header)
+    path='/api/excel/reviews/'+review['review_id']
+    before=client.get(path).json()
+    original=provider.rpc
+    def quota_on_generation(name,payload):
+        if name=='review_change' and payload['p_change'].get('state')=='generating':
+            raise HTTPException(507,'Private storage cannot reserve space for this generated workbook. No saved review decisions were replaced.')
+        return original(name,payload)
+    monkeypatch.setattr('backend.review_store.rpc',quota_on_generation)
+    response=client.post(path+'/generate')
+    assert response.status_code==507
+    assert response.json()['detail'].startswith('Private storage cannot reserve space')
+    after=client.get(path).json()
+    assert after['state']=='open'
+    assert after['version']==before['version']
+    assert after['decisions']==before['decisions']
+
+
 def test_separately_saved_history_keeps_its_existing_legacy_download_gates(remote,monkeypatch):
     client,_=remote;review,_,header=start(client);complete(client,review,header)
     monkeypatch.setattr('backend.main.save_generated_file',lambda *_,**__:{'saved':True})

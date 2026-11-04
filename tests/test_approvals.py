@@ -12,11 +12,44 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from backend.auth import require_authenticated_user
-from backend.approvals import approval_state, require_admin
+from backend.approvals import approval_state, require_admin, rpc
 from backend.main import app
 from backend.notifications import deliver_notifications
 
 OWNER, USER, OTHER = (str(uuid4()) for _ in range(3))
+
+
+@pytest.mark.parametrize(('code','message','status','detail'), [
+    ('40001','Review changed',409,'This review changed while the request was being processed.'),
+    ('40001','Unsafe review transition',409,'The review is in a state that does not allow this operation.'),
+    ('P0001','Review artifact quota reached',507,'Private storage cannot reserve space for this generated workbook.'),
+    ('P0001','Review metadata quota reached',507,'Private review storage is full.'),
+    ('40001','Artifact sizes exceed limits',413,'The generated workbook or report exceeds the 50 MiB per-file limit.'),
+])
+def test_review_rpc_maps_known_database_causes_without_exposing_provider_body(monkeypatch,code,message,status,detail):
+    monkeypatch.setenv('SUPABASE_URL','https://example.supabase.co')
+    monkeypatch.setenv('SUPABASE_SERVICE_ROLE_KEY','test-server-secret')
+    body=json.dumps({'code':code,'message':message,'details':'internal database detail','hint':'private hint'}).encode()
+    def fail(request,timeout):
+        raise HTTPError(request.full_url,400,'Bad Request',{},BytesIO(body))
+    monkeypatch.setattr('backend.approvals.urlopen',fail)
+    with pytest.raises(HTTPException) as failure:
+        rpc('review_change',{'p_id':str(uuid4())})
+    assert failure.value.status_code==status
+    assert failure.value.detail.startswith(detail)
+    assert 'internal database detail' not in failure.value.detail
+    assert 'private hint' not in failure.value.detail
+
+
+def test_approval_rpc_does_not_expose_review_database_messages(monkeypatch):
+    monkeypatch.setenv('SUPABASE_URL','https://example.supabase.co')
+    monkeypatch.setenv('SUPABASE_SERVICE_ROLE_KEY','test-server-secret')
+    body=json.dumps({'code':'P0001','message':'Review storage quota reached'}).encode()
+    def fail(request,timeout):raise HTTPError(request.full_url,400,'Bad Request',{},BytesIO(body))
+    monkeypatch.setattr('backend.approvals.urlopen',fail)
+    with pytest.raises(HTTPException) as failure:rpc('change_approval',{})
+    assert failure.value.status_code==409
+    assert 'Review storage quota reached' not in failure.value.detail
 
 
 @pytest.fixture

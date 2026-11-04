@@ -16,6 +16,25 @@ from backend.auth import require_authenticated_user
 router = APIRouter(prefix="/api", tags=["approvals"])
 Status = Literal["pending", "approved", "rejected", "revoked"]
 
+# Only these review database messages are safe and useful to return to the
+# review UI. All other Postgres details remain hidden.
+_REVIEW_DB_ERRORS = {
+    ("40001", "Review changed"): (409, "This review changed while the request was being processed. Reload it to get the latest saved decisions."),
+    ("40001", "Unsafe review transition"): (409, "The review is in a state that does not allow this operation. Reload it and check its status."),
+    ("40001", "Invalid review mutation"): (409, "The review update was rejected as invalid. Reload the review and retry."),
+    ("40001", "Generation snapshot is immutable"): (409, "The saved review decisions changed during generation. Reload the review before retrying."),
+    ("40001", "Review upload state changed"): (409, "The review upload state changed. Reload the review."),
+    ("40001", "Generation lease expired or artifact is not fenced"): (409, "The generation lease expired or changed. Reload the review and check its status."),
+    ("40001", "Artifact sizes are required"): (409, "The generated artifact could not be committed because its size metadata is missing."),
+    ("40001", "Artifact sizes exceed limits"): (413, "The generated workbook or report exceeds the 50 MiB per-file limit."),
+    ("40001", "Committed artifacts are immutable"): (409, "The saved export is immutable. Reload the review to get its current status."),
+    ("P0001", "Review quota reached"): (429, "This account has reached the five active review-session limit. Wait for a session to expire or remove one from the review list."),
+    ("P0001", "Review storage quota reached"): (507, "Private review storage is full. No saved review decisions were replaced."),
+    ("P0001", "Generation token reused or attempt limit reached"): (409, "This review has reached its generation-attempt limit. Reload it and check its status."),
+    ("P0001", "Review artifact quota reached"): (507, "Private storage cannot reserve space for this generated workbook. No saved review decisions were replaced."),
+    ("P0001", "Review metadata quota reached"): (507, "Private review storage is full. The saved decisions could not be committed."),
+}
+
 
 def owner_id() -> str:
     try:
@@ -41,9 +60,17 @@ def rpc(name: str, payload: dict):
             return json.loads(content) if content else None
     except HTTPError as exc:
         try:
-            code = json.loads(exc.read()).get("code")
+            error = json.loads(exc.read())
+            code = error.get("code")
+            database_message = error.get("message")
         except (ValueError, AttributeError):
             code = None
+            database_message = None
+        if name.startswith("review_") and isinstance(database_message, str):
+            mapped = _REVIEW_DB_ERRORS.get((code, database_message))
+            if mapped:
+                status, detail = mapped
+                raise HTTPException(status, detail) from None
         if code == "42501":
             raise HTTPException(403, "Owner access required.") from None
         if code == "40001":
