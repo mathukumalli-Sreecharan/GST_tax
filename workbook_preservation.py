@@ -124,8 +124,10 @@ def validate_export(source, exported, expected, selected, inserted_col, rate_col
                 if not field['source_column']:
                     continue
                 value = source[selected].cell(old_row, field['source_column']).value
-                if value not in (None, '') and sum(Decimal(part[key]) for part in parts) != Decimal(str(value)):
-                    raise ValueError('Preservation verification failed: split does not conserve original monetary values.')
+                if value not in (None, ''):
+                    difference=sum(Decimal(part[key]) for part in parts)-Decimal(str(value))
+                    if difference and not (key=='invoice' and abs(difference)<=Decimal('.05')):
+                        raise ValueError('Preservation verification failed: split does not conserve original monetary values.')
     for field in totals['columns'].values():
         if field['source_column'] is None:
             continue

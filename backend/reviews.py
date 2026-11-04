@@ -285,11 +285,11 @@ def save_decision(review_id: str, excel_row: int, decision: Decision, owner: str
 class SplitAllocation(BaseModel):
     model_config = ConfigDict(extra='forbid')
     # Wire values stay strings so no JSON binary float enters monetary math.
-    taxable: str
-    igst: str
-    cgst: str
-    sgst: str
-    cess: str
+    taxable: str=Field(max_length=128)
+    igst: str=Field(max_length=128)
+    cgst: str=Field(max_length=128)
+    sgst: str=Field(max_length=128)
+    cess: str=Field(max_length=128)
 
 
 class SplitRequest(BaseModel):

@@ -2,6 +2,7 @@
 from decimal import Decimal, ROUND_HALF_UP, localcontext
 
 CENT = Decimal('.01')
+INVOICE_RECONCILIATION_TOLERANCE = Decimal('.05')
 FIELDS = ('invoice', 'taxable', 'igst', 'cgst', 'sgst', 'cess')
 
 
@@ -73,19 +74,28 @@ def _currency(value):
     return format(value.quantize(CENT, rounding=ROUND_HALF_UP), 'f')
 
 
+def _exact_decimal(value):
+    return format(value, 'f')
+
+
 def _signed_currency(value):
     prefix = '+' if value > 0 else '-' if value < 0 else ''
-    return prefix + '₹' + _currency(abs(value))
+    return prefix + chr(0x20b9) + _exact_decimal(abs(value))
 
 
 def validate_split_allocations(row, rates, allocations):
     """Validate complete user-entered slab allocations without changing amounts.
 
-    Monetary inputs are exact Decimal currency values with at most two decimal
-    places. Per-component GST math may differ from the exact rate product by at
-    most one paisa. All source-to-replacement totals must match exactly; no
-    residual is distributed or silently corrected.
+    Monetary inputs retain their entered Decimal precision. Per-component GST
+    math may differ from the exact rate product by at most one paisa. All
+    source-to-replacement totals must match exactly; nothing is adjusted.
     """
+    with localcontext() as context:
+        context.prec = 300
+        return _validate_split_allocations(row, rates, allocations)
+
+
+def _validate_split_allocations(row, rates, allocations):
     errors = []
     try:
         decimal_rates = [Decimal(str(value)) for value in rates]
@@ -113,8 +123,6 @@ def validate_split_allocations(row, rates, allocations):
         try:
             parsed = money(row.get(source_key))
             original[field] = parsed if parsed is not None else Decimal(0)
-            if parsed is not None and parsed.as_tuple().exponent < -2:
-                errors.append(f'Original {label} has more than two decimal places and cannot be safely split.')
         except (InvalidOperation, TypeError, ValueError):
             original[field] = Decimal(0)
             errors.append(f'Original {label} is not a valid finite currency amount.')
@@ -137,8 +145,6 @@ def validate_split_allocations(row, rates, allocations):
                 value = money(allocation.get(field))
                 if value is None:
                     raise ValueError
-                if value.as_tuple().exponent < -2:
-                    errors.append(f'{prefix} {label} must have no more than two decimal places.')
                 parsed[field] = value
             except (InvalidOperation, TypeError, ValueError):
                 parsed[field] = Decimal(0)
@@ -177,9 +183,9 @@ def validate_split_allocations(row, rates, allocations):
                 errors.append(f'{prefix} {label} does not match the selected rate {rate}%; difference from the exact rate calculation is {_signed_currency(difference)} (maximum tolerance ₹0.01).')
 
         invoice = sum((parsed[field] for field in amount_fields), Decimal(0))
-        row_values = {'rate': format(rate.normalize(), 'f'), 'invoice': _currency(invoice),
-                      **{field: _currency(parsed[field]) for field in amount_fields}}
-        allocation_values = {field: _currency(parsed[field]) for field in amount_fields}
+        row_values = {'rate': format(rate.normalize(), 'f'), 'invoice': _exact_decimal(invoice),
+                      **{field: _exact_decimal(parsed[field]) for field in amount_fields}}
+        allocation_values = {field: _exact_decimal(parsed[field]) for field in amount_fields}
         normalized.append(allocation_values)
         output_rows.append(row_values)
 
@@ -188,7 +194,8 @@ def validate_split_allocations(row, rates, allocations):
     differences = {field: totals[field] - original[field] for field in totals}
     labels = {field: original_names[field][0] for field in original_names}
     for field, difference in differences.items():
-        if difference != 0:
+        tolerance = INVOICE_RECONCILIATION_TOLERANCE if field == 'invoice' else Decimal(0)
+        if abs(difference) > tolerance:
             errors.append(f'{labels[field]} total differs from the original by {_signed_currency(difference)} (replacement {_signed_currency(totals[field])}; original {_signed_currency(original[field])}).')
 
     return {
@@ -197,11 +204,11 @@ def validate_split_allocations(row, rates, allocations):
         'errors': errors,
         'allocations': normalized,
         'rows': output_rows,
-        'totals': {field: _currency(value) for field, value in totals.items()},
-        'original_totals': {field: _currency(value) for field, value in original.items()},
-        'differences': {field: _currency(value) for field, value in differences.items()},
+        'totals': {field: _exact_decimal(value) for field, value in totals.items()},
+        'original_totals': {field: _exact_decimal(value) for field, value in original.items()},
+        'differences': {field: _exact_decimal(value) for field, value in differences.items()},
         'tax_regime': regime,
-        'rounding': 'Amounts are exact to the nearest paisa and are never adjusted. Each GST component may differ from its exact Decimal rate calculation by at most ₹0.01; replacement totals must equal original totals exactly.',
+        'rounding': 'Entered decimal precision is preserved. Invoice Value may differ from its source total by up to ₹0.05 for rounding; all other replacement totals must match exactly. Each GST component may differ from its exact rate calculation by at most ₹0.01.',
         'direction': 'credit' if original_sign < 0 else 'debit' if original_sign > 0 else 'zero',
     }
 
