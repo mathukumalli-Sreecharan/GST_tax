@@ -28,6 +28,8 @@ _REVIEW_DB_ERRORS = {
     ("40001", "Artifact sizes are required"): (409, "The generated artifact could not be committed because its size metadata is missing."),
     ("40001", "Artifact sizes exceed limits"): (413, "The generated workbook or report exceeds the 50 MiB per-file limit."),
     ("40001", "Committed artifacts are immutable"): (409, "The saved export is immutable. Reload the review to get its current status."),
+    ("40001", "Previous generation attempt is awaiting artifact reconciliation"): (409, "A previous generation attempt is being safely reconciled. Retry generation shortly."),
+    ("40001", "Pending generation token is immutable"): (409, "A previous generation attempt is being safely reconciled. Retry generation shortly."),
     ("P0001", "Review quota reached"): (429, "This account has reached the five active review-session limit. Wait for a session to expire or remove one from the review list."),
     ("P0001", "Review storage quota reached"): (507, "Private review storage is full. No saved review decisions were replaced."),
     ("P0001", "Generation token reused or attempt limit reached"): (409, "This review has reached its generation-attempt limit. Reload it and check its status."),

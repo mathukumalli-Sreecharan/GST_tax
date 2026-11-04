@@ -28,10 +28,27 @@ class Transport:
         if name=='review_reserve':
             item=dict(id=p['p_id'],owner=p['p_user'],filename=p['p_filename'],source_hash=p['p_hash'],
                 options=p['p_options'],analysis=p['p_analysis'],decisions={},result=None,version=1,state='uploading',
-                created=time.time(),expires=time.time()+86400,lease_token=None,lease_until=None,artifact_tokens=[])
+                created=time.time(),expires=time.time()+86400,lease_token=None,lease_until=None,artifact_tokens=[],
+                artifact_reserved=0,cleanup_token=None,cleanup_until=None)
             self.items[item['id']]=deepcopy(item);return item
         if name=='review_list':return [dict(review_id=i['id'],filename=i['filename'],state=i['state']) for i in self.items.values() if i['owner']==p['p_user'] and i['state']!='deleted' and i['expires']>time.time()]
         if name=='review_orphan_paths':return []
+        if name=='review_reconcile_claim':
+            clock=time.time()
+            candidates=[i for i in self.items.values() if i['expires']>clock and i.get('lease_token') and (i.get('lease_until') or 0)<=clock and i['state'] in {'open','generating'} and (i.get('cleanup_until') or 0)<clock and (p.get('p_id') is None or (i['id']==p['p_id'] and i['owner']==p['p_user']))]
+            if not candidates:return None
+            item=min(candidates,key=lambda i:i.get('lease_until',0))
+            if item['state']=='generating':
+                item.update(state='open',version=item['version']+1,lease_until=clock+120,cleanup_token=None,cleanup_until=None)
+                return None
+            item.update(cleanup_token=str(uuid4()),cleanup_until=clock+120)
+            return deepcopy(item)
+        if name=='review_reconcile_finish':
+            item=self.items.get(p['p_id'])
+            if not item or (item['owner'],item['state'],item.get('lease_token'),item.get('cleanup_token'))!=(p['p_user'],'open',p['p_attempt'],p['p_cleanup']):return False
+            if p['p_artifact_bytes']>item['artifact_reserved']:raise HTTPException(409,'Reconciled artifacts exceed the held reservation.')
+            item.update(artifact_reserved=p['p_artifact_bytes'],lease_token=None,lease_until=None,cleanup_token=None,cleanup_until=None)
+            return True
         if name=='review_cleanup_claim':
             item=next((i for i in self.items.values() if i['state']=='deleted' or i['expires']<=time.time()),None)
             if item:item.update(state='deleted',cleanup_token=str(uuid4()))
@@ -46,7 +63,18 @@ class Transport:
             if (item['version'],item['state'],item['lease_token'])!=(p['p_version'],p['p_state'],p['p_token']):raise HTTPException(409,'Review changed.')
             change=p['p_change']
             if change['state']=='generating':
+                if item.get('lease_token') is not None:raise HTTPException(409,'Previous generation attempt is awaiting artifact reconciliation.')
                 item['lease_until']=time.time()+600;item['artifact_tokens'].append(change['lease_token'])
+                item['artifact_reserved']+=100*1024*1024
+            elif item['state']=='generating' and change['state']=='open':
+                if change.get('lease_token')!=item.get('lease_token'):raise HTTPException(409,'Generation attempt token changed.')
+                item['lease_until']=max(item.get('lease_until') or 0,time.time())+120
+            elif item['state']=='open' and change['state']=='open' and change.get('lease_token')!=item.get('lease_token'):
+                raise HTTPException(409,'Pending generation token is immutable.')
+            if item['state']=='generating' and change['state']=='generated':
+                sizes=change['result']['durable_artifact']
+                item['artifact_reserved']=item['artifact_reserved']-100*1024*1024+sizes['output_bytes']+sizes['report_bytes']
+                item['lease_until']=None
             item.update(deepcopy(change));item['version']+=1
         elif name!='review_get':raise AssertionError('Unknown review RPC')
         return deepcopy(item)
@@ -56,6 +84,15 @@ class Transport:
             for name in json.loads(body)['prefixes']:self.objects.pop('gst-review-workbooks/'+name,None)
             return b''
         key=path.removeprefix('object/').removeprefix('authenticated/')
+        if method=='POST' and key.startswith('list/'):
+            bucket=key.removeprefix('list/')
+            prefix=json.loads(body)['prefix']
+            values=[]
+            for object_key,data in self.objects.items():
+                if object_key.startswith(bucket+'/'+prefix+'/'):
+                    name=object_key.removeprefix(bucket+'/'+prefix+'/')
+                    values.append({'name':name,'metadata':{'size':len(data)}})
+            return json.dumps(values).encode()
         if method=='POST':
             if key in self.objects:raise HTTPException(503,'Immutable object exists.')
             self.objects[key]=body;return b'{}'
@@ -99,6 +136,7 @@ def test_durable_full_split_workflow_restart_download_and_ownership(remote):
     review=complete(client,review,header)
     response=client.post(path+'/generate');assert response.status_code==200,response.text
     result=response.json();assert result['review_download_id']==review['review_id']
+    assert provider.items[review['review_id']]['artifact_reserved']==result['durable_artifact']['output_bytes']+result['durable_artifact']['report_bytes']
     assert client.get(path).json()['state']=='generated'
     output=client.get(path+'/download');assert output.status_code==200
     assert client.get(path+'/report').status_code==200
@@ -149,11 +187,113 @@ def test_source_and_export_integrity_are_rechecked_and_errors_do_not_publish(rem
     provider.objects[source_key]=b'corrupted'
     assert client.post(path+'/generate').status_code==503
     assert client.get(path).json()['state']=='open'
+    provider.items[review['review_id']]['lease_until']=0
+    cleanup_reviews()
     provider.objects[source_key]=raw
     response=client.post(path+'/generate');assert response.status_code==200,response.text
     output_key=next(key for key in provider.objects if key.endswith('/output.xlsx'))
     provider.objects[output_key]=b'corrupted export'
     assert client.get(path+'/download').status_code==503
+
+
+def test_failure_before_artifact_upload_reconciles_once_and_preserves_decisions(remote,monkeypatch):
+    client,provider=remote;review,_,header=start(client);review=complete(client,review,header)
+    path='/api/excel/reviews/'+review['review_id'];before=client.get(path).json()
+    async def fail_before_generation(**kwargs):raise HTTPException(500,'Simulated failure before artifact upload.')
+    monkeypatch.setattr('backend.main.generate_excel',fail_before_generation)
+    response=client.post(path+'/generate')
+    assert response.status_code==500
+    pending=provider.items[review['review_id']]
+    assert pending['state']=='open' and pending['lease_token']
+    assert pending['artifact_reserved']==100*1024*1024
+    pending['lease_until']=0
+    cleanup_reviews()
+    reconciled=provider.items[review['review_id']]
+    assert reconciled['state']=='open' and reconciled['lease_token'] is None
+    assert reconciled['artifact_reserved']==0
+    assert client.get(path).json()['decisions']==before['decisions']
+    cleanup_reviews()
+    assert reconciled['artifact_reserved']==0
+
+
+def test_partial_artifact_upload_is_accounted_instead_of_released(remote,monkeypatch):
+    client,provider=remote;review,_,header=start(client);review=complete(client,review,header)
+    path='/api/excel/reviews/'+review['review_id'];before=client.get(path).json()
+    original=provider.storage
+    def fail_report(method,storage_path,body=None,**kwargs):
+        if method=='POST' and storage_path.endswith('/report.csv'):
+            raise HTTPException(503,'Simulated response loss during report upload.')
+        return original(method,storage_path,body,**kwargs)
+    monkeypatch.setattr('backend.review_store.storage_request',fail_report)
+    response=client.post(path+'/generate')
+    assert response.status_code==503
+    pending=provider.items[review['review_id']]
+    assert pending['state']=='open' and pending['lease_token']
+    token=pending['lease_token'];pending['lease_until']=0
+    output_key=f"gst-review-workbooks/{OWNER}/{review['review_id']}/{token}/output.xlsx"
+    output_size=len(provider.objects[output_key])
+    assert pending['artifact_reserved']==100*1024*1024
+    cleanup_reviews()
+    assert pending['artifact_reserved']==output_size
+    assert output_key in provider.objects  # Reconciliation accounts; it does not delete.
+    assert client.get(path).json()['decisions']==before['decisions']
+    cleanup_reviews()
+    assert pending['artifact_reserved']==output_size
+
+
+def test_uncertain_artifact_listing_retains_reservation(remote,monkeypatch,caplog):
+    client,provider=remote;review,_,header=start(client);review=complete(client,review,header)
+    path='/api/excel/reviews/'+review['review_id']
+    async def fail_before_generation(**kwargs):raise HTTPException(500,'Simulated failure.')
+    monkeypatch.setattr('backend.main.generate_excel',fail_before_generation)
+    assert client.post(path+'/generate').status_code==500
+    pending=provider.items[review['review_id']];pending['lease_until']=0
+    def unavailable(*args,**kwargs):raise HTTPException(503,'Storage list is unavailable.')
+    monkeypatch.setattr('backend.review_store.storage_request',unavailable)
+    cleanup_reviews()
+    assert pending['lease_token'] and pending['artifact_reserved']==100*1024*1024
+    assert 'reservation reconciliation deferred' in caplog.text
+
+
+def test_expired_lease_recovery_keeps_reservation_until_artifacts_are_accounted(remote):
+    client,provider=remote;review,_,header=start(client);review=complete(client,review,header)
+    path='/api/excel/reviews/'+review['review_id'];before=client.get(path).json()
+    token=str(uuid4())
+    provider.rpc('review_change',{'p_id':review['review_id'],'p_user':OWNER,'p_version':review['version'],'p_state':'open','p_token':None,
+                                  'p_change':{'state':'generating','lease_token':token,'decisions':before['decisions'],'result':None}})
+    pending=provider.items[review['review_id']];pending['lease_until']=0
+    output_key=f'gst-review-workbooks/{OWNER}/{review["review_id"]}/{token}/output.xlsx'
+    provider.objects[output_key]=b'partial recovery artifact'
+    recovered=client.post(path+'/recover')
+    assert recovered.status_code==200,recovered.text
+    assert recovered.json()['state']=='open'
+    assert recovered.json()['decisions']==before['decisions']
+    assert pending['lease_token']==token and pending['artifact_reserved']==100*1024*1024
+    pending['lease_until']=0
+    cleanup_reviews()
+    assert pending['artifact_reserved']==len(provider.objects[output_key])
+    assert pending['lease_token'] is None
+
+
+def test_maintenance_fences_crashed_generation_and_reconciles_without_deleting_review(remote):
+    client,provider=remote;review,_,header=start(client);review=complete(client,review,header)
+    path='/api/excel/reviews/'+review['review_id'];before=client.get(path).json()
+    token=str(uuid4())
+    provider.rpc('review_change',{'p_id':review['review_id'],'p_user':OWNER,'p_version':review['version'],'p_state':'open','p_token':None,
+                                  'p_change':{'state':'generating','lease_token':token,'decisions':before['decisions'],'result':None}})
+    pending=provider.items[review['review_id']];pending['lease_until']=0
+    output_key=f'gst-review-workbooks/{OWNER}/{review["review_id"]}/{token}/output.xlsx'
+    provider.objects[output_key]=b'crashed-worker partial output'
+    cleanup_reviews()  # First pass fences the expired lease and starts quarantine.
+    assert pending['state']=='open' and pending['lease_token']==token
+    assert pending['artifact_reserved']==100*1024*1024
+    assert client.get(path).json()['decisions']==before['decisions']
+    assert client.get('/api/excel/reviews').json()['reviews']
+    pending['lease_until']=0
+    cleanup_reviews()  # Later pass accounts the token folder, retaining the active review.
+    assert pending['state']=='open' and pending['lease_token'] is None
+    assert pending['artifact_reserved']==len(provider.objects[output_key])
+    assert client.get(path).status_code==200
 
 
 def test_generation_quota_error_is_specific_and_keeps_saved_decisions(remote,monkeypatch):

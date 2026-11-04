@@ -21,6 +21,7 @@ OWNER, USER, OTHER = (str(uuid4()) for _ in range(3))
 
 @pytest.mark.parametrize(('code','message','status','detail'), [
     ('40001','Review changed',409,'This review changed while the request was being processed.'),
+    ('40001','Previous generation attempt is awaiting artifact reconciliation',409,'A previous generation attempt is being safely reconciled.'),
     ('40001','Unsafe review transition',409,'The review is in a state that does not allow this operation.'),
     ('P0001','Review artifact quota reached',507,'Private storage cannot reserve space for this generated workbook.'),
     ('P0001','Review metadata quota reached',507,'Private review storage is full.'),

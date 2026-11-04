@@ -353,6 +353,10 @@ def confirm_split(review_id: str, excel_row: int, request: SplitConfirmation, ow
 
 @router.post('/reviews/{review_id}/generate')
 async def generate_review(review_id: str, owner: str=Depends(require_approved_user)):
+    if durable():
+        # A prior failed or recovered attempt keeps its token and reservation
+        # until its private objects have been reconciled.
+        SupabaseReviews().reconcile_pending(review_id,owner)
     with mutation(review_id,owner) as item:
         view = snapshot(item)
         if item['state']=='generated':
@@ -422,7 +426,8 @@ async def generate_review(review_id: str, owner: str=Depends(require_approved_us
         try:
             with mutation(review_id,owner) as current:
                 if current['state']=='generating' and current.get('lease_token')==item['lease_token']:
-                    current['state']='open';current['lease_token']=None;current['lease_until']=None;current['version']+=1
+                    current['state']='open';current['version']+=1
+                    if not durable():current['lease_token']=None;current['lease_until']=None
         except HTTPException:
             pass
         raise
@@ -433,9 +438,11 @@ def recover_review(review_id: str, owner: str=Depends(require_approved_user)):
     with mutation(review_id,owner) as item:
         if item['state']!='generating' or (item.get('lease_until') or 0)>time.time():
             raise HTTPException(409,'Only an expired generation lease can be recovered.')
-        # Explicitly fence the old worker. Its token-specific private artifacts
-        # remain reserved for cleanup; it cannot finalize or save file history.
-        item['state']='open';item['lease_token']=None;item['lease_until']=None;item['version']+=1
+        # Keep the durable attempt token quarantined until maintenance verifies
+        # and accounts any token-scoped objects. The database transition fences
+        # the old worker and starts a short reconciliation grace period.
+        item['state']='open';item['version']+=1
+        if not durable():item['lease_token']=None;item['lease_until']=None
         return snapshot(item)
 
 

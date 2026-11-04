@@ -1,6 +1,7 @@
 """Private durable review repository. No production fallback to local storage."""
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -12,6 +13,8 @@ from backend.files import storage_request
 
 BUCKET = 'gst-review-workbooks'
 MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 def rpc(name,payload):
@@ -91,7 +94,7 @@ class SupabaseReviews:
         token = identity(item['lease_token'])
         base = f"{identity(item['owner'])}/{identity(item['id'])}/{token}"
         output_bytes, report_bytes = output.read_bytes(), report.read_bytes()
-        if len(output_bytes) > 50*1024*1024 or len(report_bytes)>50*1024*1024:
+        if len(output_bytes) > MAX_ARTIFACT_BYTES or len(report_bytes)>MAX_ARTIFACT_BYTES:
             raise HTTPException(413,'Generated review artifacts exceed the private storage limit.')
         for name,data,mime in [('output.xlsx',output_bytes,MIME),('report.csv',report_bytes,'text/csv')]:
             fresh=self.get(item['id'],item['owner'])
@@ -102,6 +105,60 @@ class SupabaseReviews:
                 raise HTTPException(503,'Generated artifact integrity verification failed.')
         return {'token':token, 'output_hash':digest(output_bytes), 'report_hash':digest(report_bytes),
                 'output_bytes':len(output_bytes),'report_bytes':len(report_bytes)}
+
+    def reconcile_claim(self, item):
+        """Account all token-scoped objects before releasing a held reservation."""
+        owner, review_id = identity(item['owner']), identity(item['id'])
+        tokens = item.get('artifact_tokens') or []
+        if not isinstance(tokens, list) or len(tokens) > 8:
+            raise HTTPException(503, 'Generation reservation metadata could not be validated.')
+        total = 0
+        allowed = {'output.xlsx', 'report.csv'}
+        for value in tokens:
+            token = identity(value)
+            prefix = f'{owner}/{review_id}/{token}'
+            raw = storage_request('POST', 'object/list/'+BUCKET,
+                                  json.dumps({'prefix':prefix,'limit':10,'offset':0,
+                                              'sortBy':{'column':'name','order':'asc'}}).encode(),
+                                  content_type='application/json')
+            try:
+                entries = json.loads(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(503, 'Generated artifact listing could not be validated.') from None
+            if not isinstance(entries, list) or len(entries) > 2:
+                raise HTTPException(503, 'Generated artifact listing could not be validated.')
+            seen = set()
+            token_bytes = 0
+            for entry in entries:
+                if not isinstance(entry, dict) or entry.get('name') not in allowed or entry['name'] in seen:
+                    raise HTTPException(503, 'Unexpected object found under a generation token; reservation retained.')
+                seen.add(entry['name'])
+                metadata = entry.get('metadata')
+                size = metadata.get('size') if isinstance(metadata, dict) else None
+                if isinstance(size, bool) or not (isinstance(size, int) or isinstance(size, str) and re.fullmatch(r'\d+', size)):
+                    raise HTTPException(503, 'Generated artifact size is unavailable; reservation retained.')
+                size = int(size)
+                if not 0 <= size <= MAX_ARTIFACT_BYTES:
+                    raise HTTPException(503, 'Generated artifact exceeds its supported limit; reservation retained.')
+                token_bytes += size
+            if token_bytes > 2 * MAX_ARTIFACT_BYTES:
+                raise HTTPException(503, 'Generated artifact reservation could not be reconciled.')
+            total += token_bytes
+        if total > int(item.get('artifact_reserved') or 0):
+            raise HTTPException(503, 'Stored artifacts exceed the held reservation; reservation retained.')
+        return rpc('review_reconcile_finish', {
+            'p_id':review_id, 'p_user':owner, 'p_attempt':identity(item['lease_token']),
+            'p_cleanup':identity(item['cleanup_token']), 'p_artifact_bytes':total})
+
+    def reconcile_pending(self, review_id, owner):
+        review_id, owner = identity(review_id), identity(owner)
+        claim = rpc('review_reconcile_claim', {'p_id':review_id,'p_user':owner})
+        if claim:
+            self.reconcile_claim(claim)
+        fresh = self.get(review_id, owner)
+        if fresh['state'] == 'open' and fresh.get('lease_token'):
+            raise HTTPException(409, 'A previous generation attempt is being safely reconciled. Retry generation shortly.')
+        return fresh
 
     def download(self, item, kind):
         result=json.loads(item['result']); artifact=result.get('durable_artifact',{})
@@ -126,6 +183,17 @@ def cleanup_reviews(limit=20):
             paths += [base+'/'+token+'/output.xlsx',base+'/'+token+'/report.csv']
         storage_request('DELETE','object/'+BUCKET,json.dumps({'prefixes':paths}).encode(),content_type='application/json')
         rpc('review_cleanup_finish',{'p_id':item['id'],'p_token':item['cleanup_token']})
+
+    # Reconcile quarantined attempts for reviews that are still active. This
+    # accounts any partial upload by token and never deletes an active review.
+    repository = SupabaseReviews()
+    for _ in range(limit):
+        item = rpc('review_reconcile_claim', {'p_id':None,'p_user':None})
+        if not item:break
+        try:
+            repository.reconcile_claim(item)
+        except HTTPException:
+            logger.warning('Review artifact reservation reconciliation deferred; its reservation remains held.')
 
     # A late in-flight storage request can finish after a tombstone was cleaned.
     # Periodic reconciliation prevents such objects from becoming permanent orphans.

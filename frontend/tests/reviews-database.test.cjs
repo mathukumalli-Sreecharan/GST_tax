@@ -29,6 +29,7 @@ test('durable reviews: additive migration, private objects, versions, leases, ex
   const approvals=await q('select * from public.user_approvals order by user_id');
   const notifications=await q('select * from public.approval_notifications order by id');
   await db.exec(fs.readFileSync('../supabase/migrations/007_durable_excel_reviews.sql','utf8'));
+  await db.exec(fs.readFileSync('../supabase/migrations/008_review_artifact_reconciliation.sql','utf8'));
   await t.test('upgrade preserves approvals, owner and frozen notification records',async()=>{
    assert.deepEqual(await q('select * from public.user_approvals order by user_id'),approvals);
    assert.deepEqual(await q('select * from public.approval_notifications order by id'),notifications);
@@ -36,7 +37,7 @@ test('durable reviews: additive migration, private objects, versions, leases, ex
   });
   await t.test('every review definer has an empty search path and service-only execute grants',async()=>{
    const functions=await q("select p.oid::regprocedure::text signature,p.prosecdef,p.proconfig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'review_%'");
-   assert.equal(functions.length,8);
+   assert.equal(functions.length,10);
    for(const fn of functions){
     assert.equal(fn.prosecdef,true);assert.ok(fn.proconfig.includes('search_path=""'));
     for(const browser of ['anon','authenticated'])assert.equal((await q('select has_function_privilege($1,$2,\'EXECUTE\') allowed',[browser,fn.signature]))[0].allowed,false);
@@ -88,8 +89,16 @@ test('durable reviews: additive migration, private objects, versions, leases, ex
   await t.test('explicit recovery fences a stale worker and reserves new immutable paths',async()=>{
    const stale=item;
    await role('postgres');await q('update public.excel_reviews set lease_until=0 where id=$1',[id]);await role('service_role');
-   item=await get();item=await change(item,{state:'open',lease_token:null});
+   item=await get();item=await change(item,{state:'open',lease_token:token});
    await assert.rejects(change(stale,{state:'generated',result:{durable_artifact:{token}}}),/Review changed/);
+   assert.equal(item.lease_token,token);assert.ok(item.lease_until>Date.now()/1000);
+   await role('postgres');await q('update public.excel_reviews set lease_until=0 where id=$1',[id]);await role('service_role');
+   const reconcile=(await q('select public.review_reconcile_claim($1,$2) item',[id,user]))[0].item;
+   assert.equal(reconcile.lease_token,token);
+   assert.equal((await q('select public.review_reconcile_claim($1,$2) item',[id,user]))[0].item,null);
+   assert.equal((await q('select public.review_reconcile_finish($1,$2,$3,$4,$5) ok',[id,user,token,reconcile.cleanup_token,0]))[0].ok,true);
+   assert.equal((await q('select public.review_reconcile_finish($1,$2,$3,$4,$5) ok',[id,user,token,reconcile.cleanup_token,0]))[0].ok,false);
+   item=await get();assert.equal(item.artifact_reserved,0);assert.equal(item.lease_token,null);
    await assert.rejects(change(item,{state:'generating',lease_token:token}),/token reused/);
    item=await change(item,{state:'generating',lease_token:token2});
    assert.deepEqual(item.artifact_tokens,[token,token2]);
@@ -145,8 +154,29 @@ test('durable reviews: additive migration, private objects, versions, leases, ex
    }
    await assert.rejects(q("select public.review_reserve('99999999-aaaa-4aaa-8aaa-aaaaaaaaaaaa',$1,'test.xlsx',1000,$2,'{}','{}')",[user,'a'.repeat(64)]),/quota reached/);
    const record=reserved[0];
-   const opened=(await q('select public.review_change($1,$2,$3,$4,$5,$6) item',[record.id,user,record.version,'generating',token,JSON.stringify({state:'open',lease_token:null,decisions:{},result:null})]))[0].item;
-   await assert.rejects(q('select public.review_change($1,$2,$3,$4,$5,$6)',[record.id,user,opened.version,'open',null,JSON.stringify({state:'generating',lease_token:token2,decisions:{},result:null})]),/artifact quota reached/);
+   const opened=(await q('select public.review_change($1,$2,$3,$4,$5,$6) item',[record.id,user,record.version,'generating',token,JSON.stringify({state:'open',lease_token:token,decisions:{},result:null})]))[0].item;
+   await assert.rejects(change(opened,{state:'generating',lease_token:token2}),/awaiting artifact reconciliation/);
+   // Simulate an open legacy row whose old failure path cleared its lease marker.
+   await role('postgres');await q('update public.excel_reviews set lease_token=null,lease_until=null,cleanup_token=null where id=$1',[record.id]);
+   const check=(await q("select state='open' is_open,lease_token is null no_lease,artifact_reserved>0 has_reservation,jsonb_array_length(artifact_tokens)>0 has_tokens,(result is null or result='null'::jsonb) no_result,cleanup_token is distinct from (artifact_tokens->>(jsonb_array_length(artifact_tokens)-1))::uuid needs_reconcile,expires>extract(epoch from now()) not_expired from public.excel_reviews where id=$1",[record.id]))[0];
+   assert.ok(Object.values(check).every(Boolean),JSON.stringify(check));
+   await role('service_role');
+   assert.equal((await q('select public.review_reconcile_claim($1,$2) item',[record.id,user]))[0].item,null);
+   let quarantined=(await q('select public.review_get($1,$2) item',[record.id,user]))[0].item;
+   assert.equal(quarantined.lease_token,token,JSON.stringify(quarantined));assert.ok(quarantined.lease_until>Date.now()/1000);
+   await role('postgres');await q('update public.excel_reviews set lease_until=0 where id=$1',[record.id]);await role('service_role');
+   const claim=(await q('select public.review_reconcile_claim($1,$2) item',[record.id,user]))[0].item;
+   await q('select public.review_reconcile_finish($1,$2,$3,$4,$5)',[record.id,user,token,claim.cleanup_token,0]);
+   const retry=(await q('select public.review_get($1,$2) item',[record.id,user]))[0].item;
+   const retried=await change(retry,{state:'generating',lease_token:token2});
+   assert.equal(retried.artifact_reserved,100*1024*1024);
+   assert.equal((await q('select public.review_reconcile_finish($1,$2,$3,$4,$5) ok',[record.id,user,token,claim.cleanup_token,0]))[0].ok,false);
+   assert.equal((await q('select public.review_get($1,$2) item',[record.id,user]))[0].item.artifact_reserved,100*1024*1024);
+   const blocked='99999999-bbbb-4bbb-8bbb-999999999999';
+   await q("select public.review_reserve($1,$2,'blocked.xlsx',1000,$3,'{}','{}')",[blocked,other,'a'.repeat(64)]);
+   const blockedOpen=(await q('select public.review_activate($1,$2) item',[blocked,other]))[0].item;
+   await assert.rejects(change(blockedOpen,{state:'generating',lease_token:'dddddddd-dddd-4ddd-8ddd-dddddddddddd'},other),/artifact quota reached/);
+   assert.equal((await q('select public.review_get($1,$2) item',[record.id,user]))[0].item.artifact_reserved,100*1024*1024);
   });
  }finally{await db.close();}
 });
