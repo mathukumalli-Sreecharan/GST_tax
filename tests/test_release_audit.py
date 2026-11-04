@@ -100,10 +100,21 @@ def test_synthetic_b2b_q7_journey_and_independent_reconciliation(client):
     review=preview_confirm(client,review,7)
     assert client.post(path+'/generate').status_code==409  # other required rows remain
     review=save(client,review,8,rates=[5,12,18]).json()
-    missing=client.post(path+'/rows/8/split-preview',json={'version':review['version']}).json()
-    assert missing['decisions']['8']['split_preview']['manual_required']
+    missing=client.post(path+'/rows/8/split-preview',json={'version':review['version']})
+    assert missing.status_code==422
+    slab_allocations=[
+        {'taxable':'100.00','igst':'5.00','cgst':'0.00','sgst':'0.00','cess':'0.00'},
+        {'taxable':'200.00','igst':'24.00','cgst':'0.00','sgst':'0.00','cess':'0.00'},
+        {'taxable':'300.00','igst':'54.00','cgst':'0.00','sgst':'0.00','cess':'0.00'},
+    ]
+    preview=client.post(path+'/rows/8/split-preview',json={'version':review['version'],'allocations':slab_allocations})
+    assert preview.status_code==200 and preview.json()['decisions']['8']['split_preview']['valid'],preview.json()['decisions']['8']['split_preview']
+    missing=preview.json()
     assert client.post(path+'/generate').status_code==409
-    review=preview_confirm(client,missing,8,[100,200,300])
+    preview_id=missing['decisions']['8']['split_preview']['preview_id']
+    confirmed=client.post(path+'/rows/8/split-confirm',json={'version':missing['version'],'preview_id':preview_id})
+    assert confirmed.status_code==200,confirmed.text
+    review=confirmed.json()
     # A single selected rate preserves missing/negative original amounts; it does
     # not establish that signed mixed-rate splitting is supported.
     review=save(client,review,9,rates=[18]).json()

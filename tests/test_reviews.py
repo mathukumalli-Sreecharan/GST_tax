@@ -10,6 +10,7 @@ from openpyxl import Workbook, load_workbook
 from backend.main import app, RESULTS
 from backend.approvals import require_approved_user
 from backend.reviews import connect
+from tests.review_helpers import calculated_slab_allocations
 
 
 def source(layout=0,count=1):
@@ -97,7 +98,9 @@ def test_gate_decisions_reload_edits_and_slab_validation(client):
             response=save(client,persisted,transaction['excel_row'],rates=[18]);assert response.status_code==200
             persisted=response.json()
     # Multi-rate decisions additionally require a financially valid preview and confirmation.
-    response=client.post(f'{path}/rows/{row}/split-preview',json={'version':persisted['version']})
+    row_data=next(item for item in persisted['rows'] if item['excel_row']==row)
+    allocations=calculated_slab_allocations(row_data,persisted['decisions'][str(row)]['rates'])
+    response=client.post(f'{path}/rows/{row}/split-preview',json={'version':persisted['version'],'allocations':allocations})
     assert response.status_code==200,response.text
     persisted=response.json()
     preview=persisted['decisions'][str(row)]['split_preview']

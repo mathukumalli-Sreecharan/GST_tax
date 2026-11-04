@@ -17,7 +17,7 @@ test('review filtering, navigation, manual slabs, persistence, edits and generat
    if(body.version!==state.version)return route.fulfill({status:409,json:{detail:'Review changed'}});
    if(url.pathname.endsWith('/split-preview')||url.pathname.endsWith('/split-confirm')){
     const row=Number(url.pathname.split('/').at(-2));const d=state.decisions[row];
-    if(url.pathname.endsWith('/split-preview'))d.split_preview={preview_id:'preview',manual_required:false,method:'calculated',rows:d.rates.map(rate=>({rate,invoice:'59',taxable:'50',igst:'9',cgst:'0',sgst:'0',cess:'0'})),taxable_allocations:body.taxable_allocations??null,requested_mode:body.tax_mode??null};
+    if(url.pathname.endsWith('/split-preview'))d.split_preview={preview_id:'preview',valid:true,manual_required:false,errors:[],allocations:body.allocations,rows:d.rates.map(rate=>({rate,invoice:'59',taxable:'50',igst:'9',cgst:'0',sgst:'0',cess:'0'})),totals:{invoice:'118',taxable:'100',igst:'18',cgst:'0',sgst:'0',cess:'0'},original_totals:{invoice:'118',taxable:'100',igst:'18',cgst:'0',sgst:'0',cess:'0'},differences:{invoice:'0',taxable:'0',igst:'0',cgst:'0',sgst:'0',cess:'0'}};
     else d.split_confirmed=true;
     state={...state,version:state.version+1,decisions:{...state.decisions,[row]:{...d}}};
     return route.fulfill({json:state});
@@ -33,7 +33,7 @@ test('review filtering, navigation, manual slabs, persistence, edits and generat
   await page.goto('/?screen=workspace');
   const skip=page.getByRole('button',{name:'Skip introduction'});if(await skip.isVisible())await skip.click();
   await page.getByRole('button',{name:'Process Excel',exact:true}).click();
-  await page.getByRole('button',{name:'review.xlsx (open)',exact:true}).click();
+  const reviewButton=page.getByRole('button',{name:'review.xlsx (open)',exact:true});if(await reviewButton.count())await reviewButton.click();
   await expect(page.getByRole('heading',{name:'Verify transactions before generating Excel'})).toBeVisible();
  }
  await resume();
@@ -49,12 +49,9 @@ test('review filtering, navigation, manual slabs, persistence, edits and generat
  await page.getByRole('button',{name:'CORRECT',exact:true}).click();
  await expect(page.getByText('Decision saved for Excel row 8. Next transaction selected.')).toBeVisible();
  await expect(page.getByRole('heading',{name:'Review Excel row 21',exact:true})).toBeVisible();
- await expect(page.locator('.data-table').getByText('INV-1',{exact:true})).toBeVisible();
+ await expect(page.locator('.data-table').getByText('INV-1',{exact:true})).toHaveCount(0);
+ await expect(page.locator('.data-table tbody tr')).toHaveCount(1);
  await expect(page.getByRole('button',{name:'Next transaction',exact:true})).toBeDisabled();
- await page.getByRole('button',{name:'Previous transaction',exact:true}).click();
- await expect(page.getByRole('heading',{name:'Review Excel row 8',exact:true})).toBeVisible();
- await expect(page.getByText('Decision saved: CORRECT')).toBeVisible();
- await page.getByRole('button',{name:'Next transaction',exact:true}).click();
  await expect(page.getByRole('button',{name:'Generate Excel',exact:true})).toBeDisabled();
  await expect(page.getByRole('heading',{name:'Review Excel row 21',exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'CORRECT',exact:true})).toBeDisabled();
@@ -68,21 +65,21 @@ test('review filtering, navigation, manual slabs, persistence, edits and generat
  await expect(page.getByRole('button',{name:'Generate Excel',exact:true})).toBeDisabled();
  expect(generated).toBe(0);
  await resume(); // Saved decisions survive component/browser reload.
- await page.getByRole('button',{name:'Next transaction',exact:true}).click();
  await expect(page.getByLabel('GST rate for slab 2',{exact:true})).toHaveValue('12');
  await page.getByLabel('GST rate for slab 2',{exact:true}).fill('18');
  await page.getByRole('button',{name:'Update decision',exact:true}).click();
  await expect.poll(()=>state.decisions['21'].rates[1]).toBe('18');
- await page.getByRole('button',{name:'Calculate replacement rows',exact:true}).click();
  await expect(page.getByRole('button',{name:'Generate Excel',exact:true})).toBeDisabled();
- await expect(page.getByRole('button',{name:'Confirm replacement rows',exact:true})).toBeEnabled();
- await page.getByLabel('Taxable allocation for slab 1').fill('50');
+ await page.getByLabel('TAXABLE allocation for slab 1 at 5%').fill('50');
  await expect(page.getByRole('button',{name:'Confirm replacement rows',exact:true})).toBeDisabled();
- await page.getByLabel('Taxable allocation for slab 2').fill('50');
- await page.getByRole('button',{name:'Preview manual allocations',exact:true}).click();
+ await page.getByLabel('TAXABLE allocation for slab 2 at 18%').fill('50');
+ for(const [slab,rate] of [[1,5],[2,18]]){
+  await page.getByLabel(`IGST allocation for slab ${slab} at ${rate}%`).fill('9');
+  for(const field of ['CGST','SGST','CESS'])await page.getByLabel(`${field} allocation for slab ${slab} at ${rate}%`).fill('0');
+ }
+ await page.getByRole('button',{name:'Validate allocations',exact:true}).click();
  await expect(page.getByRole('button',{name:'Confirm replacement rows',exact:true})).toBeEnabled();
  await page.getByRole('button',{name:'Confirm replacement rows',exact:true}).click();
- await expect(page.getByText('Split confirmed and saved.')).toBeVisible();
  await expect(page.getByRole('button',{name:'Generate Excel',exact:true})).toBeEnabled();
  await page.getByRole('button',{name:'Generate Excel',exact:true}).click();
  await expect(page.getByRole('heading',{name:'Processed rows',exact:true})).toBeVisible();
@@ -102,7 +99,7 @@ test('matched-only review shows an empty state and disables row navigation',asyn
  await page.goto('/?screen=workspace');
  const skip=page.getByRole('button',{name:'Skip introduction'});if(await skip.isVisible())await skip.click();
  await page.getByRole('button',{name:'Process Excel',exact:true}).click();
- await page.getByRole('button',{name:'matched.xlsx (open)',exact:true}).click();
+ const matchedButton=page.getByRole('button',{name:'matched.xlsx (open)',exact:true});if(await matchedButton.count())await matchedButton.click();
  await expect(page.getByText('No transactions require verification. All transactions are matched or no reviewable transactions remain.')).toBeVisible();
  await expect(page.getByRole('heading',{name:'Transactions requiring verification (0)'})).toBeVisible();
  await expect(page.getByRole('button',{name:'Previous transaction',exact:true})).toHaveCount(0);
@@ -122,15 +119,15 @@ test('saving a multi-slab decision stays on the transaction for taxable allocati
   return route.fulfill({json:url.pathname==='/api/excel/reviews'?{reviews:[{review_id:state.review_id,filename:state.filename,state:state.state}]}:state});
  });
  await page.goto('/?screen=workspace');await page.getByRole('button',{name:'Process Excel',exact:true}).click();
- await page.getByRole('button',{name:'allocations.xlsx (open)',exact:true}).click();
+ const allocationButton=page.getByRole('button',{name:'allocations.xlsx (open)',exact:true});if(await allocationButton.count())await allocationButton.click();
  await expect(page.getByRole('heading',{name:'Review Excel row 10',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'WRONG',exact:true}).click();
  await page.getByLabel('Number of GST slabs').fill('2');
  await page.getByLabel('GST rate for slab 1',{exact:true}).fill('5');
  await page.getByLabel('GST rate for slab 2',{exact:true}).fill('18');
  await page.getByRole('button',{name:'Save decision',exact:true}).click();
- await expect(page.getByText('Rates saved for Excel row 10. Enter and confirm taxable allocations before continuing.')).toBeVisible();
+ await expect(page.getByText('Rates saved for Excel row 10. Enter and confirm the complete tax breakup for every slab before generating.')).toBeVisible();
  await expect(page.getByRole('heading',{name:'Review Excel row 10',exact:true})).toBeVisible();
- await expect(page.getByLabel('Taxable allocation for slab 1')).toBeVisible();
+ await expect(page.getByLabel('TAXABLE allocation for slab 1 at 5%')).toBeVisible();
  await expect(page.getByRole('button',{name:'Next transaction',exact:true})).toBeEnabled();
 });

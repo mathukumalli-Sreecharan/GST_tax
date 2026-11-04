@@ -37,6 +37,11 @@ def rounded(values, target=None):
 
 def calculate_split(row, rates, taxable_allocations=None, tax_mode=None, cess_allocations=None):
     """Return an exact preview or request manual taxable amounts. Never select rates."""
+    # The review API supplies the complete per-slab allocation. Keep the
+    # historical calculation branch below for internal callers while ensuring
+    # the browser-facing path validates every entered component independently.
+    if isinstance(taxable_allocations, list) and all(isinstance(part, dict) for part in taxable_allocations):
+        return validate_split_allocations(row, rates, taxable_allocations)
     with localcontext() as ctx:
         ctx.prec = 50
         source = {key: money(row.get({'invoice':'invoice_value','taxable':'taxable_value'}.get(key,key))) for key in FIELDS}
@@ -62,6 +67,143 @@ def calculate_split(row, rates, taxable_allocations=None, tax_mode=None, cess_al
             if 'calculated_taxable' in result: result['calculated_taxable'] = [str(-Decimal(value)) for value in result['calculated_taxable']]
         result['direction'] = 'credit' if sign < 0 else 'debit'
         return result
+
+
+def _currency(value):
+    return format(value.quantize(CENT, rounding=ROUND_HALF_UP), 'f')
+
+
+def _signed_currency(value):
+    prefix = '+' if value > 0 else '-' if value < 0 else ''
+    return prefix + '₹' + _currency(abs(value))
+
+
+def validate_split_allocations(row, rates, allocations):
+    """Validate complete user-entered slab allocations without changing amounts.
+
+    Monetary inputs are exact Decimal currency values with at most two decimal
+    places. Per-component GST math may differ from the exact rate product by at
+    most one paisa. All source-to-replacement totals must match exactly; no
+    residual is distributed or silently corrected.
+    """
+    errors = []
+    try:
+        decimal_rates = [Decimal(str(value)) for value in rates]
+    except (InvalidOperation, TypeError, ValueError):
+        decimal_rates = []
+    if not 2 <= len(decimal_rates) <= 10:
+        errors.append('Select between two and ten GST slab rates.')
+    elif len(set(decimal_rates)) != len(decimal_rates) or any(
+            not value.is_finite() or value < 0 or value > 100 or value.as_tuple().exponent < -2
+            for value in decimal_rates):
+        errors.append('GST slab rates must be distinct values from 0 to 100 with at most two decimal places.')
+    if len(allocations) != len(decimal_rates):
+        errors.append('Enter one complete allocation for each saved GST slab rate.')
+
+    original_names = {
+        'invoice': ('Invoice Value', 'invoice_value'),
+        'taxable': ('Taxable Value', 'taxable_value'),
+        'igst': ('Integrated Tax', 'igst'),
+        'cgst': ('Central Tax', 'cgst'),
+        'sgst': ('State/UT Tax', 'sgst'),
+        'cess': ('Cess', 'cess'),
+    }
+    original = {}
+    for field, (label, source_key) in original_names.items():
+        try:
+            parsed = money(row.get(source_key))
+            original[field] = parsed if parsed is not None else Decimal(0)
+            if parsed is not None and parsed.as_tuple().exponent < -2:
+                errors.append(f'Original {label} has more than two decimal places and cannot be safely split.')
+        except (InvalidOperation, TypeError, ValueError):
+            original[field] = Decimal(0)
+            errors.append(f'Original {label} is not a valid finite currency amount.')
+
+    amount_fields = ('taxable', 'igst', 'cgst', 'sgst', 'cess')
+    signs = {1 if amount > 0 else -1 for amount in original.values() if amount}
+    if len(signs) > 1:
+        errors.append('The original transaction contains mixed positive and negative amounts; it cannot be split safely.')
+    original_sign = next(iter(signs), 0)
+
+    normalized = []
+    output_rows = []
+    regime = None
+    for index, allocation in enumerate(allocations):
+        prefix = f'Slab {index + 1}'
+        parsed = {}
+        for field in amount_fields:
+            label = original_names[field][0]
+            try:
+                value = money(allocation.get(field))
+                if value is None:
+                    raise ValueError
+                if value.as_tuple().exponent < -2:
+                    errors.append(f'{prefix} {label} must have no more than two decimal places.')
+                parsed[field] = value
+            except (InvalidOperation, TypeError, ValueError):
+                parsed[field] = Decimal(0)
+                errors.append(f'{prefix} {label} must be a finite currency amount.')
+        for field, value in parsed.items():
+            if original_sign == 0 and value:
+                errors.append(f'{prefix} {original_names[field][0]} must be zero because the original transaction has no monetary sign.')
+            elif original_sign and value and (1 if value > 0 else -1) != original_sign:
+                errors.append(f'{prefix} {original_names[field][0]} must keep the original transaction sign.')
+
+        rate = decimal_rates[index] if index < len(decimal_rates) else Decimal(0)
+        igst, cgst, sgst = parsed['igst'], parsed['cgst'], parsed['sgst']
+        has_igst = igst != 0
+        has_intra_state = cgst != 0 or sgst != 0
+        if has_igst and has_intra_state:
+            errors.append(f'{prefix} cannot contain both Integrated Tax and Central/State tax.')
+        current_regime = 'igst' if has_igst else 'cgst_sgst' if has_intra_state else None
+        if current_regime and regime and current_regime != regime:
+            errors.append('All replacement slabs must use the same tax regime as one transaction.')
+        if current_regime:
+            regime = current_regime
+        if has_igst:
+            if cgst != 0 or sgst != 0:
+                errors.append(f'{prefix} Integrated Tax allocations require Central Tax and State/UT Tax to be zero.')
+            tax_diffs = [('Integrated Tax', igst - parsed['taxable'] * rate / 100)]
+        elif has_intra_state:
+            if igst != 0:
+                errors.append(f'{prefix} Central/State allocations require Integrated Tax to be zero.')
+            half_tax = parsed['taxable'] * rate / 200
+            tax_diffs = [('Central Tax', cgst - half_tax), ('State/UT Tax', sgst - half_tax)]
+        else:
+            expected_tax = parsed['taxable'] * rate / 100
+            tax_diffs = [('GST', expected_tax)] if abs(expected_tax) > CENT else []
+        for label, difference in tax_diffs:
+            if abs(difference) > CENT:
+                errors.append(f'{prefix} {label} does not match the selected rate {rate}%; difference from the exact rate calculation is {_signed_currency(difference)} (maximum tolerance ₹0.01).')
+
+        invoice = sum((parsed[field] for field in amount_fields), Decimal(0))
+        row_values = {'rate': format(rate.normalize(), 'f'), 'invoice': _currency(invoice),
+                      **{field: _currency(parsed[field]) for field in amount_fields}}
+        allocation_values = {field: _currency(parsed[field]) for field in amount_fields}
+        normalized.append(allocation_values)
+        output_rows.append(row_values)
+
+    totals = {field: sum((Decimal(part[field]) for part in output_rows), Decimal(0))
+              for field in ('invoice', *amount_fields)}
+    differences = {field: totals[field] - original[field] for field in totals}
+    labels = {field: original_names[field][0] for field in original_names}
+    for field, difference in differences.items():
+        if difference != 0:
+            errors.append(f'{labels[field]} total differs from the original by {_signed_currency(difference)} (replacement {_signed_currency(totals[field])}; original {_signed_currency(original[field])}).')
+
+    return {
+        'valid': not errors,
+        'manual_required': bool(errors),
+        'errors': errors,
+        'allocations': normalized,
+        'rows': output_rows,
+        'totals': {field: _currency(value) for field, value in totals.items()},
+        'original_totals': {field: _currency(value) for field, value in original.items()},
+        'differences': {field: _currency(value) for field, value in differences.items()},
+        'tax_regime': regime,
+        'rounding': 'Amounts are exact to the nearest paisa and are never adjusted. Each GST component may differ from its exact Decimal rate calculation by at most ₹0.01; replacement totals must equal original totals exactly.',
+        'direction': 'credit' if original_sign < 0 else 'debit' if original_sign > 0 else 'zero',
+    }
 
 
 def _calculate(row, rates, taxable_allocations, tax_mode, cess_allocations):

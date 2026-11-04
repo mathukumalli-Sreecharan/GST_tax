@@ -282,12 +282,20 @@ def save_decision(review_id: str, excel_row: int, decision: Decision, owner: str
         return snapshot(item)
 
 
+class SplitAllocation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    # Wire values stay strings so no JSON binary float enters monetary math.
+    taxable: str
+    igst: str
+    cgst: str
+    sgst: str
+    cess: str
+
+
 class SplitRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = Field(ge=1)
-    taxable_allocations: list[Decimal] | None = Field(default=None, min_length=2, max_length=10)
-    tax_mode: str | None = None
-    cess_allocations: list[Decimal] | None = Field(default=None, min_length=2, max_length=10)
+    allocations: list[SplitAllocation] = Field(min_length=2, max_length=10)
 
 
 class SplitConfirmation(BaseModel):
@@ -296,16 +304,16 @@ class SplitConfirmation(BaseModel):
     preview_id: str
 
 
-def checked_split(view, row_number, decision, allocations=None, mode=None, cesses=None):
+def checked_split(view, row_number, decision, allocations):
     row = next((row for row in view['rows'] if row['excel_row'] == row_number), None)
     if row is None or decision.get('choice') != 'WRONG' or len(decision.get('rates', [])) < 2:
         raise HTTPException(422, 'Save WRONG with multiple selected slabs before calculating a split.')
     try:
         if any(issue['row'] == row_number for issue in view['column_totals']['issues']):
             raise ValueError('This transaction has invalid monetary cells. Correct the source monetary values before allocating slabs.')
-        preview = calculate_split(row, decision['rates'], allocations, mode, cesses)
+        preview = calculate_split(row, decision['rates'], allocations)
         # Nonzero allocations need a mapped destination; never drop an unmapped tax.
-        if not preview['manual_required']:
+        if preview['valid']:
             for key, value in preview['totals'].items():
                 if Decimal(value) and not view['column_totals']['columns'][key]['source_column']:
                     raise ValueError('A nonzero ' + key.upper() + ' allocation has no mapped column. Correct the mapping before splitting.')
@@ -321,13 +329,10 @@ def preview_split(review_id: str, excel_row: int, request: SplitRequest, owner: 
             raise HTTPException(409, 'Review changed. Reload before calculating a split.')
         view = snapshot(item); decisions = view['decisions']
         decision = decisions.get(str(excel_row), {})
-        preview = checked_split(view, excel_row, decision, request.taxable_allocations, request.tax_mode, request.cess_allocations)
+        preview = checked_split(view, excel_row, decision, [allocation.model_dump() for allocation in request.allocations])
         decision.pop('split_confirmed', None)
         decision.pop('split_confirmed_at', None)
-        decision['split_preview'] = {**preview, 'preview_id': str(uuid.uuid4()),
-                                    'taxable_allocations': [str(v) for v in request.taxable_allocations] if request.taxable_allocations is not None else None,
-                                    'requested_mode': request.tax_mode,
-                                    'cess_allocations': [str(v) for v in request.cess_allocations] if request.cess_allocations is not None else None}
+        decision['split_preview'] = {**preview, 'preview_id': str(uuid.uuid4())}
         decisions[str(excel_row)] = decision
         item['decisions']=json.dumps(decisions);item['version']+=1
         return snapshot(item)
@@ -340,10 +345,12 @@ def confirm_split(review_id: str, excel_row: int, request: SplitConfirmation, ow
             raise HTTPException(409, 'Review changed. Reload and confirm the current preview.')
         view = snapshot(item); decisions = view['decisions']
         decision = decisions.get(str(excel_row), {}); preview = decision.get('split_preview', {})
-        if preview.get('preview_id') != request.preview_id or preview.get('manual_required', True):
-            raise HTTPException(422, 'Calculate a valid replacement-row preview before confirming.')
-        checked = checked_split(view, excel_row, decision, preview['taxable_allocations'], preview['requested_mode'], preview.get('cess_allocations'))
-        if checked.get('rows') != preview['rows']:
+        if preview.get('preview_id') != request.preview_id or preview.get('valid') is not True:
+            raise HTTPException(422, 'Calculate and validate complete replacement allocations before confirming them.')
+        if not isinstance(preview.get('allocations'), list):
+            raise HTTPException(422, 'This saved preview predates complete allocations. Re-enter and validate every slab.')
+        checked = checked_split(view, excel_row, decision, preview['allocations'])
+        if not checked.get('valid') or any(checked.get(key) != preview.get(key) for key in ('allocations', 'rows', 'totals', 'original_totals', 'differences')):
             raise HTTPException(409, 'Split changed. Calculate a fresh preview.')
         decision['split_confirmed'] = True
         decision['split_confirmed_at'] = time.time()
@@ -380,9 +387,12 @@ async def generate_review(review_id: str, owner: str=Depends(require_approved_us
                     overrides[int(key)] = float(Decimal(rates[0]))
                 else:
                     preview = decision.get('split_preview', {})
-                    checked = checked_split(view, int(key), decision, preview.get('taxable_allocations'), preview.get('requested_mode'), preview.get('cess_allocations'))
-                    if not decision.get('split_confirmed') or checked.get('rows') != preview.get('rows'):
-                        raise HTTPException(409, 'Confirm all financial splits before generating Excel.')
+                    if not isinstance(preview.get('allocations'), list):
+                        raise HTTPException(409, 'Re-enter and validate the complete allocation for every slab before generating Excel.')
+                    checked = checked_split(view, int(key), decision, preview['allocations'])
+                    if (not decision.get('split_confirmed') or not checked.get('valid') or
+                            any(checked.get(field) != preview.get(field) for field in ('allocations', 'rows', 'totals', 'original_totals', 'differences'))):
+                        raise HTTPException(409, 'Confirm all valid financial allocations before generating Excel.')
                     splits[int(key)] = checked['rows']
                     overrides[int(key)] = float(Decimal(rates[0]))
         result = await generate_excel(file=upload,user_id=owner,monetary_columns=json.dumps(mappings) if mappings is not None else None,

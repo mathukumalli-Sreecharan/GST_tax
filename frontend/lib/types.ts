@@ -94,7 +94,8 @@ export type ReviewRow = {
  rate:number|string|null; inferred_rate:number|null; status:'MATCHED'|'REVIEW_REQUIRED'|'UNRESOLVED'; reason:string;
 };
 export type SplitRow = {rate:string;invoice:string;taxable:string;igst:string;cgst:string;sgst:string;cess:string};
-export type SplitPreview = {preview_id:string;manual_required:boolean;reason?:string;method?:string;tax_mode?:string;rows?:SplitRow[];rounding?:string;taxable_allocations:string[]|null;cess_allocations?:string[]|null;calculated_taxable?:string[];requested_mode:string|null};
+export type SplitAllocation = {taxable:string;igst:string;cgst:string;sgst:string;cess:string};
+export type SplitPreview = {preview_id:string;valid:boolean;manual_required:boolean;errors:string[];allocations:SplitAllocation[];rows:SplitRow[];totals:Record<string,string>;original_totals:Record<string,string>;differences:Record<string,string>;tax_regime:'igst'|'cgst_sgst'|null;rounding:string;direction:'credit'|'debit'|'zero'};
 export type ReviewSession = {
  generation_blockers?:string[];
  review_id:string;filename:string;worksheet:string;version:number;lease_until?:number|null;state:'open'|'generating'|'generated';expires_at:number;

@@ -13,10 +13,98 @@ from backend.approvals import require_approved_user
 from gst_calculator import calculate_rate
 from gst_splits import calculate_split
 from tests.test_reviews import save
+from tests.review_helpers import calculated_slab_allocations
 
 
 def values(invoice='348', taxable='300', igst='48', cgst='0', sgst='0', cess='0'):
     return dict(invoice_value=invoice, taxable_value=taxable, igst=igst, cgst=cgst, sgst=sgst, cess=cess)
+
+
+def entered_rows(sign=1, regime='igst', cess=(0,0)):
+    def amount(value):return f'{Decimal(str(value))*sign:.2f}'
+    rows=[]
+    for taxable,rate,cess_value in [(200,18,cess[0]),(100,12,cess[1])]:
+        tax=Decimal(taxable)*rate/100
+        rows.append({'taxable':amount(taxable),
+            'igst':amount(tax if regime=='igst' else 0),
+            'cgst':amount(tax/2 if regime=='cgst_sgst' else 0),
+            'sgst':amount(tax/2 if regime=='cgst_sgst' else 0),
+            'cess':amount(cess_value)})
+    return rows
+
+
+def test_complete_manual_allocations_validate_igst_intra_state_and_negative_notes():
+    for regime in ('igst','cgst_sgst'):
+        for sign in (-1,1):
+            source=values(
+                str(Decimal(348)*sign),str(Decimal(300)*sign),
+                str(Decimal(48)*sign if regime=='igst' else 0),
+                str(Decimal(24)*sign if regime=='cgst_sgst' else 0),
+                str(Decimal(24)*sign if regime=='cgst_sgst' else 0),
+            )
+            result=calculate_split(source,[18,12],entered_rows(sign,regime))
+            assert result['valid'],result['errors']
+            assert [row['rate'] for row in result['rows']]==['18','12']
+            assert result['totals']['invoice']==f'{348*sign:.2f}'
+            assert result['direction']=='credit' if sign<0 else result['direction']=='debit'
+            assert result['tax_regime']==regime
+
+
+def test_complete_manual_allocations_support_zero_cess_and_explicit_nonzero_cess():
+    result=calculate_split(values(),[18,12],entered_rows())
+    assert result['valid'] and [row['cess'] for row in result['rows']]==['0.00','0.00']
+    source=values('351','300','48','0','0','3')
+    result=calculate_split(source,[18,12],entered_rows(cess=(2,1)))
+    assert result['valid'],result['errors']
+    assert result['totals']['cess']=='3.00'
+    assert [row['invoice'] for row in result['rows']]==['238.00','113.00']
+
+
+@pytest.mark.parametrize(('field','bad_value','label'),[
+    ('taxable','199.00','Taxable Value'),('igst','35.98','Integrated Tax'),
+    ('cgst','17.98','Central Tax'),('sgst','17.98','State/UT Tax'),('cess','0.02','Cess'),
+])
+def test_manual_allocation_component_mismatches_name_the_field(field,bad_value,label):
+    rows=entered_rows()
+    rows[0][field]=bad_value
+    result=calculate_split(values(),[18,12],rows)
+    assert not result['valid']
+    assert any(label in error for error in result['errors'])
+
+
+def test_manual_allocation_invoice_mismatch_and_mixed_regimes_are_rejected():
+    result=calculate_split(values(invoice='349'),[18,12],entered_rows())
+    assert not result['valid'] and any('Invoice Value' in error for error in result['errors'])
+    rows=entered_rows()
+    rows[0]['cgst']='1.00'
+    result=calculate_split(values(),[18,12],rows)
+    assert not result['valid'] and any('both Integrated Tax and Central/State tax' in error for error in result['errors'])
+    rows=entered_rows()
+    rows[1].update(igst='0.00',cgst='6.00',sgst='6.00')
+    result=calculate_split(values(),[18,12],rows)
+    assert not result['valid'] and any('same tax regime' in error for error in result['errors'])
+
+
+def test_manual_allocation_allows_at_most_one_paisa_gst_rounding_and_rejects_more():
+    source=values('0.11','0.10','0.01','0','0','0')
+    allocation=[{'taxable':'0.10','igst':'0.01','cgst':'0.00','sgst':'0.00','cess':'0.00'},
+                {'taxable':'0.00','igst':'0.00','cgst':'0.00','sgst':'0.00','cess':'0.00'}]
+    accepted=calculate_split(source,[5,12],allocation)
+    assert accepted['valid'],accepted['errors']  # exact 0.005 GST product differs by half a paisa
+    allocation[0]['igst']='0.02'
+    rejected=calculate_split(values('0.12','0.10','0.02','0','0','0'),[5,12],allocation)
+    assert not rejected['valid'] and any('Integrated Tax' in error for error in rejected['errors'])
+
+
+def test_manual_allocations_reject_precision_wrong_sign_and_invalid_values():
+    rows=entered_rows(sign=1)
+    rows[0]['cess']='0.001'
+    result=calculate_split(values(),[18,12],rows)
+    assert not result['valid'] and any('two decimal places' in error for error in result['errors'])
+    rows=entered_rows(sign=-1)
+    rows[0]['igst']='36.00'
+    result=calculate_split(values('-348','-300','-48','0','0','0'),[18,12],rows)
+    assert not result['valid'] and any('original transaction sign' in error for error in result['errors'])
 
 
 def test_single_slab_reference_example_uses_existing_rate_calculation():
@@ -132,12 +220,15 @@ def client():
 
 def preview_confirm(client, review, row, allocations=None):
     path=f"/api/excel/reviews/{review['review_id']}/rows/{row}"
-    body={'version':review['version']}
-    if allocations is not None:body['taxable_allocations']=allocations
+    decision=review['decisions'][str(row)]
+    source=next(item for item in review['rows'] if item['excel_row']==row)
+    payload=calculated_slab_allocations(source,decision['rates'],taxable_allocations=allocations)
+    assert payload is not None, 'Test must provide explicit full allocations when inference is ambiguous.'
+    body={'version':review['version'],'allocations':payload}
     response=client.post(path+'/split-preview',json=body)
     assert response.status_code==200,response.text
     review=response.json();part=review['decisions'][str(row)]['split_preview']
-    assert not part['manual_required']
+    assert part['valid'],part['errors']
     response=client.post(path+'/split-confirm',json={'version':review['version'],'preview_id':part['preview_id']})
     assert response.status_code==200,response.text
     return response.json()
@@ -203,16 +294,43 @@ def test_confirmation_versions_ownership_and_edits_invalidate_split(client):
     review=save(client,review,header+1,rates=[18,12]).json()
     rowpath=f"/api/excel/reviews/{review['review_id']}/rows/{header+1}"
     assert client.post(rowpath+'/split-confirm',json={'version':review['version'],'preview_id':'invented'}).status_code==422
-    response=client.post(rowpath+'/split-preview',json={'version':review['version']})
+    row=next(item for item in review['rows'] if item['excel_row']==header+1)
+    allocations=calculated_slab_allocations(row,review['decisions'][str(header+1)]['rates'])
+    response=client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':allocations})
     updated=response.json()
-    assert client.post(rowpath+'/split-preview',json={'version':review['version']}).status_code==409
+    assert client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':allocations}).status_code==409
     app.dependency_overrides[require_approved_user]=lambda:'other-owner'
-    assert client.post(rowpath+'/split-preview',json={'version':updated['version']}).status_code==404
+    assert client.post(rowpath+'/split-preview',json={'version':updated['version'],'allocations':allocations}).status_code==404
     app.dependency_overrides[require_approved_user]=lambda:'split-owner'
-    confirmed=preview_confirm(client,updated,header+1)
+    part=updated['decisions'][str(header+1)]['split_preview']
+    confirmation=client.post(rowpath+'/split-confirm',json={'version':updated['version'],'preview_id':part['preview_id']})
+    assert confirmation.status_code==200,confirmation.text
+    confirmed=confirmation.json()
     edited=save(client,confirmed,header+1,rates=[12,18]).json()
     assert not edited['decisions'][str(header+1)].get('split_confirmed')
     assert 'split_preview' not in edited['decisions'][str(header+1)]
+
+
+def test_review_api_rejects_unreconciled_and_numeric_wire_allocations(client):
+    raw,options,header,_=fixture()
+    review=client.post('/api/excel/process',files={'file':('a.xlsx',raw)},data=options).json()
+    review=save(client,review,header+1,rates=[18,12]).json()
+    rowpath=f"/api/excel/reviews/{review['review_id']}/rows/{header+1}"
+    row=next(item for item in review['rows'] if item['excel_row']==header+1)
+    allocations=calculated_slab_allocations(row,review['decisions'][str(header+1)]['rates'])
+    malformed=[dict(part) for part in allocations]
+    malformed[0]['taxable']=200.0
+    rejected=client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':malformed})
+    assert rejected.status_code==422  # JSON floats never enter Decimal currency math.
+    allocations[0]['taxable']='199.00'
+    response=client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':allocations})
+    assert response.status_code==200,response.text
+    updated=response.json();preview=updated['decisions'][str(header+1)]['split_preview']
+    assert preview['valid'] is False
+    assert any('Taxable Value' in message for message in preview['errors'])
+    confirmation=client.post(rowpath+'/split-confirm',json={'version':updated['version'],'preview_id':preview['preview_id']})
+    assert confirmation.status_code==422
+    assert not updated['decisions'][str(header+1)].get('split_confirmed')
 
 
 def test_unsupported_merged_transaction_fails_without_publishing(client):
@@ -304,12 +422,15 @@ def test_manual_cess_confirmation_and_export_preserve_all_components(client):
     review=save(client,review,header+1,rates=[18,12]).json()
     path=f"/api/excel/reviews/{review['review_id']}"
     rowpath=f'{path}/rows/{header+1}'
-    review=client.post(rowpath+'/split-preview',json={'version':review['version']}).json()
-    assert review['decisions'][str(header+1)]['split_preview']['manual_required']
-    assert client.post(path+'/generate').status_code==409
-    response=client.post(rowpath+'/split-preview',json={'version':review['version'],'cess_allocations':[2,1]})
+    allocations=[
+        {'taxable':'200.00','igst':'36.00','cgst':'0.00','sgst':'0.00','cess':'2.00'},
+        {'taxable':'100.00','igst':'12.00','cgst':'0.00','sgst':'0.00','cess':'1.00'},
+    ]
+    response=client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':allocations})
     assert response.status_code==200,response.text
     review=response.json();preview=review['decisions'][str(header+1)]['split_preview']
+    assert preview['valid']
+    assert client.post(path+'/generate').status_code==409
     assert [Decimal(part['cess']) for part in preview['rows']]==[2,1]
     review=client.post(rowpath+'/split-confirm',json={'version':review['version'],'preview_id':preview['preview_id']}).json()
     for row in review['rows']:
@@ -319,3 +440,41 @@ def test_manual_cess_confirmation_and_export_preserve_all_components(client):
         result=client.post(path+'/generate')
     assert result.status_code==200,result.text
     assert Decimal(result.json()['column_totals']['columns']['cess']['total'])==3
+
+
+def test_manual_intra_state_allocations_reach_workbook_cells(client):
+    raw,options,header,fields=fixture()
+    wb=load_workbook(BytesIO(raw));ws=wb[options['worksheet']]
+    ws.cell(header+1,fields.index('igst')+1,0)
+    ws.cell(header+1,fields.index('cgst')+1,24)
+    ws.cell(header+1,fields.index('sgst')+1,24)
+    stream=BytesIO();wb.save(stream);wb.close()
+    review=client.post('/api/excel/process',files={'file':('intra.xlsx',stream.getvalue())},data=options).json()
+    review=save(client,review,header+1,rates=[18,12]).json()
+    path=f"/api/excel/reviews/{review['review_id']}"
+    rowpath=f'{path}/rows/{header+1}'
+    allocations=[
+        {'taxable':'200.00','igst':'0.00','cgst':'18.00','sgst':'18.00','cess':'0.00'},
+        {'taxable':'100.00','igst':'0.00','cgst':'6.00','sgst':'6.00','cess':'0.00'},
+    ]
+    response=client.post(rowpath+'/split-preview',json={'version':review['version'],'allocations':allocations})
+    assert response.status_code==200,response.text
+    review=response.json();preview=review['decisions'][str(header+1)]['split_preview']
+    assert preview['valid'],preview['errors']
+    review=client.post(rowpath+'/split-confirm',json={'version':review['version'],'preview_id':preview['preview_id']}).json()
+    for item in review['rows']:
+        if item['status']!='MATCHED' and str(item['excel_row']) not in review['decisions']:
+            review=save(client,review,item['excel_row'],'CORRECT').json()
+    with patch('backend.main.save_generated_file',return_value={'saved':False}):
+        generated=client.post(path+'/generate')
+    assert generated.status_code==200,generated.text
+    result=generated.json();data=client.get('/api/excel/download/'+result['file_id']).content
+    workbook=load_workbook(BytesIO(data));sheet=workbook[options['worksheet']]
+    rate_col=result['rate_column']['index']
+    col=lambda key:fields.index(key)+1+int(fields.index(key)+1>=rate_col)
+    output_rows=result['column_totals']['source_to_output_rows'][str(header+1)]
+    assert [sheet.cell(row,col('cgst')).value for row in output_rows]==[18,6]
+    assert [sheet.cell(row,col('sgst')).value for row in output_rows]==[18,6]
+    assert [sheet.cell(row,col('igst')).value for row in output_rows]==[0,0]
+    assert [sheet.cell(row,col('invoice')).value for row in output_rows]==[236,112]
+    workbook.close()

@@ -394,7 +394,7 @@ def test_two_signed_authenticated_users_isolated_on_every_review_route(remote,mo
     operations=[('GET','',None),('DELETE','',None),('POST','/generate',None),('POST','/recover',None),
         ('GET','/download',None),('GET','/report',None),
         ('POST',f'/rows/{header+1}',{'version':first['version'],'choice':'CORRECT'}),
-        ('POST',f'/rows/{header+1}/split-preview',{'version':first['version']}),
+        ('POST',f'/rows/{header+1}/split-preview',{'version':first['version'],'allocations':[{'taxable':'0','igst':'0','cgst':'0','sgst':'0','cess':'0'},{'taxable':'0','igst':'0','cgst':'0','sgst':'0','cess':'0'}]}),
         ('POST',f'/rows/{header+1}/split-confirm',{'version':first['version'],'preview_id':'guessed'})]
     for method,suffix,body in operations:
         assert b.request(method,path+suffix,json=body).status_code==404

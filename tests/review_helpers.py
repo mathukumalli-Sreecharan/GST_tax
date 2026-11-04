@@ -1,4 +1,13 @@
 """Explicit fixture-user decisions before exercising existing export regressions."""
+def calculated_slab_allocations(row, rates, taxable_allocations=None, cess_allocations=None):
+    """Turn legacy test fixture amounts into the new complete preview payload."""
+    from gst_splits import calculate_split
+    result=calculate_split(row,rates,taxable_allocations=taxable_allocations,cess_allocations=cess_allocations)
+    if result.get('manual_required'):
+        return None
+    return [{field:part[field] for field in ('taxable','igst','cgst','sgst','cess')} for part in result['rows']]
+
+
 def reviewed_post(client,path,**kwargs):
     response=client.post(path,**kwargs)
     if response.status_code!=200:
