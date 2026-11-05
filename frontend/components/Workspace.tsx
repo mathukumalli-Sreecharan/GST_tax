@@ -282,7 +282,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
       {activeSheet?.existing_rate && rateAction === "recalculate" && !confirmOverwrite && <div className="inline-alert" style={{ marginTop: 12 }}>Confirm overwrite in Column Mapping before recalculating existing rates.</div>}
       {busy ? <div className="loading"><span className="spinner" />Processing workbook…</div> : <div className="result-actions" style={{ marginTop: 18 }}><button className="btn" onClick={() => setStage(1)}>Back to mapping</button><button className="btn btn-primary" onClick={() => void doProcess()} disabled={!file || !activeSheet || (Boolean(activeSheet.existing_rate && rateAction === "recalculate") && !confirmOverwrite)}><BadgeCheck size={14} />Calculate GST Rates</button></div>}
     </div></div>}
-    {stage === 3 && review && !result && <TransactionReview initial={review} onUpdate={setReview} onGenerated={setResult} />}
+    {stage === 3 && review && !result && <TransactionReview initial={review} onUpdate={setReview} onResume={()=>setReviewRestored(true)} onGenerated={setResult} restored={reviewRestored} />}
     {stage === 3 && result && <ResultsView result={result} columns={resultColumns} onDownload={() => void triggerDownload("download")} onReport={() => void triggerDownload("report")} onRowClick={(row) => { setSelectedVerification(row); navigate("Verification"); }} onNew={() => { setStage(0); setResult(null); setReview(null); setFile(null); setInspection(null); setPage("Process Excel"); setSuccess(""); }} />}
   </>;
 
@@ -292,8 +292,12 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
     const requiringReview = result?.review_progress?.remaining ?? review?.progress.remaining ?? (result ? 0 : undefined);
     const unresolved = result?.summary.unmatched ?? review?.rows.filter((row) => row.status === "UNRESOLVED").length;
     const warnings = result?.verification.length ?? review?.progress.requiring_review;
-    const reviewed = result ? total : review?.progress.verified;
-    const progress = total ? Math.round(((reviewed ?? 0) / total) * 100) : 0;
+    const completed = result ? total : review ? review.progress.matched + review.progress.verified : undefined;
+    const sessionProgress = total ? Math.round(((completed ?? 0) / total) * 100) : 0;
+    const warningsLabel = result ? "Calculation Warnings" : "Flagged Rows";
+    const warningsNote = review
+      ? `${review.progress.verified} verified; ${review.progress.remaining} remaining`
+      : result ? "Calculation checks in output" : "Rows requiring a check";
     const startProcessing = () => { navigate("Process Excel"); setStage(0); setSuccess(""); };
     const metricCard = (label: string, value: number | undefined, note: string, Icon: LucideIcon, tone: string, kind: string) =>
       <div className={`dashboard-kpi ${kind}`} key={label}>
@@ -322,8 +326,8 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
               {metricCard("Unmatched Records",unresolved,"No rate assigned",CircleAlert,"#ef5363","rose")}
             </div>
             <div className="dashboard-kpi-grid dashboard-secondary-kpis">
-              {metricCard("Calculation Warnings",warnings,"Rows requiring a check",TriangleAlert,"#8958e8","purple")}
-              <div className="dashboard-kpi progress-kpi"><span className="dashboard-kpi-icon" style={{ "--kpi-tone": "#243b53" } as CSSProperties}><Activity size={19}/></span><div className="dashboard-kpi-copy"><span>Session Progress</span><strong>{result ? "Complete" : review ? `${progress}% reviewed` : "Not started"}</strong><small>{review ? `${review.progress.verified} of ${review.progress.total} rows reviewed` : result ? `${total?.toLocaleString() ?? 0} rows processed` : "Upload an Excel workbook to begin"}</small></div><span className="progress-ring" style={{ "--progress": `${result ? 100 : progress}%` } as CSSProperties}><b>{result ? "100%" : review ? `${progress}%` : "0%"}</b></span></div>
+              {metricCard(warningsLabel,warnings,warningsNote,TriangleAlert,"#8958e8","purple")}
+              <div className="dashboard-kpi progress-kpi"><span className="dashboard-kpi-icon" style={{ "--kpi-tone": "#243b53" } as CSSProperties}><Activity size={19}/></span><div className="dashboard-kpi-copy"><span>Session Progress</span><strong>{result ? "Complete" : review ? `${sessionProgress}% complete` : "Not started"}</strong><small>{review ? `${review.progress.matched} matched + ${review.progress.verified} reviewed of ${review.progress.total} rows complete` : result ? `${total?.toLocaleString() ?? 0} rows processed` : "Upload an Excel workbook to begin"}</small></div><span className="progress-ring" style={{ "--progress": `${result ? 100 : sessionProgress}%` } as CSSProperties}><b>{result ? "100%" : review ? `${sessionProgress}%` : "0%"}</b></span></div>
             </div>
           </section>
 
