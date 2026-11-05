@@ -104,10 +104,17 @@ def test_gate_decisions_reload_edits_and_slab_validation(client):
     assert response.status_code==200,response.text
     persisted=response.json()
     preview=persisted['decisions'][str(row)]['split_preview']
+    assert preview['allocations']==allocations
     response=client.post(f'{path}/rows/{row}/split-confirm',json={'version':persisted['version'],'preview_id':preview['preview_id']})
     assert response.status_code==200,response.text
     persisted=response.json()
+    assert persisted['decisions'][str(row)]['split_complete'] is True
     assert persisted['progress']['remaining']==0
+    reloaded=client.get(path).json()
+    assert reloaded['review_id']==review['review_id']
+    assert reloaded['decisions'][str(row)]['split_preview']['allocations']==allocations
+    assert reloaded['decisions'][str(row)]['split_complete'] is True
+    assert reloaded['progress']['remaining']==0
     with patch('backend.main.save_generated_file',return_value={'saved':False}):
         result=client.post(path+'/generate')
     assert result.status_code==200,result.text
@@ -122,6 +129,39 @@ def test_gate_decisions_reload_edits_and_slab_validation(client):
     assert save(client,persisted,row).status_code==409
     with connect() as db:assert db.execute('select source from reviews where id=?',(review['review_id'],)).fetchone()[0]==raw
     wb.close()
+
+
+@pytest.mark.parametrize('damage',['missing','invalid'])
+def test_confirmed_split_without_valid_saved_allocations_is_incomplete_for_progress_and_generation(client,damage):
+    review,_,_,_=begin(client,count=3)
+    path='/api/excel/reviews/'+review['review_id']
+    row=review['rows'][2]
+    excel_row=row['excel_row']
+    review=save(client,review,excel_row,rates=[12,28]).json()
+    allocations=calculated_slab_allocations(row,review['decisions'][str(excel_row)]['rates'])
+    review=client.post(f'{path}/rows/{excel_row}/split-preview',json={
+        'version':review['version'],'allocations':allocations,
+    }).json()
+    preview=review['decisions'][str(excel_row)]['split_preview']
+    review=client.post(f'{path}/rows/{excel_row}/split-confirm',json={
+        'version':review['version'],'preview_id':preview['preview_id'],
+    }).json()
+    decisions=review['decisions']
+    if damage=='missing':
+        decisions[str(excel_row)]['split_preview'].pop('allocations')
+    else:
+        decisions[str(excel_row)]['split_preview']['allocations'][0]['taxable']='65.00'
+    with connect() as db:
+        db.execute('update reviews set decisions=? where id=?',(json.dumps(decisions),review['review_id']))
+
+    restored=client.get(path).json()
+    assert restored['progress']['remaining']==2
+    assert restored['decisions'][str(excel_row)]['split_complete'] is False
+    assert any(item['excel_row']==excel_row for item in restored['rows'] if item['status']!='MATCHED')
+    with patch('backend.main.generate_excel') as generate:
+        response=client.post(path+'/generate')
+    assert response.status_code==409
+    generate.assert_not_called()
 
 
 def test_private_access_and_expiry(client):

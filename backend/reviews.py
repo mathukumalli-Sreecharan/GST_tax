@@ -82,12 +82,35 @@ def read_item(review_id,owner):
 
 
 def needs_split(decision):
-    return decision.get('choice') == 'WRONG' and len(decision.get('rates', [])) > 1 and not decision.get('split_confirmed')
+    return decision.get('choice') == 'WRONG' and len(decision.get('rates', [])) > 1 and not decision.get('split_complete')
+
+
+def split_complete(view, row_number, decision):
+    """Use the same full financial validation for progress and generation."""
+    if decision.get('choice') != 'WRONG' or len(decision.get('rates', [])) <= 1:
+        return True
+    preview = decision.get('split_preview')
+    if (not decision.get('split_confirmed') or not isinstance(preview, dict) or
+            preview.get('valid') is not True or not isinstance(preview.get('preview_id'), str) or
+            not preview['preview_id'] or not isinstance(preview.get('allocations'), list)):
+        return False
+    try:
+        checked = checked_split(view, row_number, decision, preview['allocations'])
+    except (HTTPException, ValueError, InvalidOperation):
+        return False
+    return checked.get('valid') is True and all(
+        checked.get(field) == preview.get(field)
+        for field in ('allocations', 'rows', 'totals', 'original_totals', 'differences')
+    )
 
 
 def snapshot(item):
     analysis = json.loads(item['analysis'])
     decisions = json.loads(item['decisions'])
+    view = {**analysis}
+    for key, decision in decisions.items():
+        if decision.get('choice') == 'WRONG' and len(decision.get('rates', [])) > 1:
+            decision['split_complete'] = split_complete(view, int(key), decision)
     required = [row for row in analysis['rows'] if row['status'] != 'MATCHED' or needs_split(decisions.get(str(row['excel_row']), {}))]
     verified = sum(str(row['excel_row']) in decisions and not needs_split(decisions[str(row['excel_row'])]) for row in required)
     blockers=[]
@@ -387,7 +410,7 @@ async def generate_review(review_id: str, owner: str=Depends(require_approved_us
                     overrides[int(key)] = float(Decimal(rates[0]))
                 else:
                     preview = decision.get('split_preview', {})
-                    if not isinstance(preview.get('allocations'), list):
+                    if not split_complete(view, int(key), decision):
                         raise HTTPException(409, 'Re-enter and validate the complete allocation for every slab before generating Excel.')
                     checked = checked_split(view, int(key), decision, preview['allocations'])
                     if (not decision.get('split_confirmed') or not checked.get('valid') or

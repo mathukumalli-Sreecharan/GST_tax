@@ -9,7 +9,7 @@ import {allocationInvoice,allocationTotals,allocationsComplete,formatAmount,same
 
 const fields: [keyof ReviewRow,string][]=[['supplier_gstin','Supplier GSTIN'],['supplier_name','Supplier name'],['invoice_number','Invoice number'],['invoice_date','Invoice date'],['invoice_value','Invoice value'],['taxable_value','Taxable value'],['igst','IGST'],['cgst','CGST'],['sgst','SGST/UTGST'],['cess','Cess']];
 const columns:ColumnDef<ReviewRow,unknown>[]=[{accessorKey:'excel_row',header:'Excel row'},...fields.map(([accessorKey,header])=>({accessorKey,header})),{accessorKey:'rate',header:'Assigned rate'},{accessorKey:'status',header:'Status'},{accessorKey:'reason',header:'Reason for review'}];
-export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initial?:ReviewSession;onUpdate:(review:ReviewSession)=>void;onGenerated:(result:ProcessResponse)=>void;onResume?:()=>void}){
+export function TransactionReview({initial,onUpdate,onGenerated,onResume,restored=false}:{initial?:ReviewSession;onUpdate:(review:ReviewSession)=>void;onGenerated:(result:ProcessResponse)=>void;onResume?:()=>void;restored?:boolean}){
  const [sessions,setSessions]=useState<{review_id:string;filename:string;state:string}[]>([]);
  const [selected,setSelected]=useState<number|null>(null),[choice,setChoice]=useState(''),[count,setCount]=useState(0),[rates,setRates]=useState<string[]>([]);
  const [allocations,setAllocations]=useState<SplitAllocationInput[]>([]);
@@ -35,7 +35,7 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
  async function generate(){if(!initial)return;setBusy(true);setError('');try{const result=parseProcessResponse(await approvalApi<unknown>(`/excel/reviews/${initial.review_id}/generate`,{method:'POST'}));onUpdate({...initial,state:'generated',result});onGenerated(result);}catch(e){setError(e instanceof Error?e.message:'Unable to generate workbook.');}finally{setBusy(false);}}
  if(!initial)return <>{sessions.length>0&&<section className="panel panel-body"><h2>Resume a review</h2><p className="subtext">Reviews are retained for up to 24 hours on this server.</p>{sessions.map(item=><div key={item.review_id} className="toolbar"><button className="btn" disabled={busy} onClick={()=>void resume(item.review_id)}>{item.filename} ({item.state})</button><button className="btn btn-small" disabled={busy} onClick={()=>{void approvalApi(`/excel/reviews/${item.review_id}`,{method:'DELETE'}).then(()=>setSessions(sessions.filter(s=>s.review_id!==item.review_id))).catch(e=>setError(e instanceof Error?e.message:'Unable to delete review.'));}}>Delete review</button></div>)}</section>}{error&&<p role="alert" className="inline-error">{error}</p>}</>;
  const progress=initial.progress;
- const unconfirmedSplit=Object.values(initial.decisions).some(d=>d.choice==='WRONG'&&d.rates.length>1&&!d.split_confirmed);
+ const unconfirmedSplit=Object.values(initial.decisions).some(d=>d.choice==='WRONG'&&d.rates.length>1&&!(d.split_complete??d.split_confirmed));
  const index=row?reviewRows.findIndex(item=>item.excel_row===row.excel_row):-1;
  const preview=decision?.split_preview;
  const savedSlabs=choice==='WRONG'&&JSON.stringify(rates)===JSON.stringify(decision?.rates);
@@ -50,7 +50,8 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
   {error&&<p role="alert" className="inline-error">{error}</p>}
   {initial.state==='generating'&&<p className="subtext">Generation is in progress. Reload this review to check its state. An interrupted generation can be recovered after its ten-minute lease expires.</p>}
   {initial.state==='generating'&&initial.lease_until&&initial.lease_until*1000<Date.now()&&<button className="btn" disabled={busy} onClick={()=>{setBusy(true);void approvalApi<ReviewSession>(`/excel/reviews/${initial.review_id}/recover`,{method:'POST'}).then(onUpdate).catch(e=>setError(e instanceof Error?e.message:'Recovery failed.')).finally(()=>setBusy(false));}}>Recover interrupted generation</button>}
-  {initial.generation_blockers?.map(message=><p className="inline-error" key={message}>{message}</p>)}
+   {initial.generation_blockers?.map(message=><p className="inline-error" key={message}>{message}</p>)}
+  <p className="subtext" role="status">{restored?'Review restored':'Review active'} for {initial.filename}. Generation uses the server-side source associated with this review and verifies it before export. Browser file selection is shown in the workspace header.</p>
   <section className="panel panel-body"><h3>Transactions requiring verification ({reviewRows.length})</h3><DataTable rows={reviewRows} columns={columns} statusFilter emptyText="No transactions require verification. All transactions are matched or no reviewable transactions remain." onRowClick={item=>{setSaveNotice('');setSelected(item.excel_row);}} />
   <details><summary>Excluded structural rows ({initial.excluded_rows.length})</summary><ul>{initial.excluded_rows.map(item=><li key={item.row}>Excel row {item.row}: {item.reason}</li>)}</ul></details></section>
   {row&&<section className="panel panel-body" style={{marginTop:16}}><h3>Review Excel row {row.excel_row}</h3><p className="subtext">{row.status}: {row.reason||'The assigned rate matches the existing calculation rules.'}</p>
@@ -72,7 +73,8 @@ export function TransactionReview({initial,onUpdate,onGenerated,onResume}:{initi
    {preview&&preview.errors?.length>0&&<ul className="inline-error split-errors" role="alert">{preview.errors.map((message,index)=><li key={`${index}-${message}`}>{message}</li>)}</ul>}
    {preview?.valid&&<p className="success-note" role="status">Allocations validated. {preview.rounding}</p>}
    {previewChanged&&preview&&<p className="subtext" role="status">Allocations changed after validation. Validate them again before confirming.</p>}
-   {decision.split_confirmed&&<p className="success-note" role="status">Replacement rows confirmed and saved.</p>}
+   {decision.split_complete&&<p className="success-note" role="status">Replacement rows confirmed and saved.</p>}
+   {decision.split_confirmed&&!decision.split_complete&&<p className="inline-error" role="alert">Saved allocation data is incomplete or no longer validates. Re-enter and validate all slab amounts for this transaction.</p>}
   </section>}
   <div className="result-actions" style={{marginTop:20}}><button className="btn btn-primary" disabled={busy||Boolean(initial.generation_blockers?.length)||Boolean(unsavedDecision)||Boolean(decision?.split_confirmed&&previewChanged)||progress.remaining>0||unconfirmedSplit||initial.state==='generating'||!progress.total} onClick={()=>void generate()}>Generate Excel</button><span className="subtext">{progress.remaining} required reviews remaining.</span></div>
  </section>;

@@ -67,6 +67,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [review, setReview] = useState<ReviewSession | null>(null);
+  const [reviewRestored, setReviewRestored] = useState(false);
   const [monetaryColumns, setMonetaryColumns] = useState<Record<string, number | null>>({});
   useEffect(() => {
     let active = true;
@@ -76,6 +77,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
       const restored = parseReviewSession(await approvalApi<unknown>(`/excel/reviews/${latest.review_id}`));
       if (active) {
         setReview(restored);
+        setReviewRestored(true);
         if (restored.result) setResult(restored.result);
         setStage(3);
       }
@@ -95,7 +97,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
 
   const selectFile = async (newFile: File | undefined) => {
     if (!newFile) return;
-    setError(""); setSuccess(""); setInspection(null); setResult(null); setReview(null); setStage(0); setFile(newFile);
+    setError(""); setSuccess(""); setInspection(null); setResult(null); setReview(null); setReviewRestored(false); setStage(0); setFile(newFile);
     if (!newFile.name.toLowerCase().endsWith(".xlsx")) { setError("Choose an .xlsx workbook. Other formats are not supported."); return; }
     if (newFile.size > sizeLimit) { setError("The workbook exceeds the 20 MB upload limit."); return; }
     setBusy(true);
@@ -142,7 +144,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
         taxableHeaderRow: activeSheet.detected?.taxable_header_row ?? firstDataRow - 1,
         recalculateExisting: Boolean(activeSheet.existing_rate && rateAction === "recalculate"),
         confirmOverwrite });
-      setResult(null); setReview(processed); setStage(3); setPage("Process Excel");
+      setResult(null); setReview(processed); setReviewRestored(false); setStage(3); setPage("Process Excel");
       setSuccess("Analysis completed. Review transactions before generating Excel.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Processing failed. Check the workbook and try again."); setStage(1); }
     finally { setBusy(false); }
@@ -271,7 +273,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
     {inspection?.source_info?.read_only_detected && <div role="status" className="inline-alert" style={{ marginBottom: 12 }}>Read-only source detected. Your original file will remain unchanged. The updated workbook will be generated as a separate file.</div>}
     {error && <div role="alert" className="inline-error" style={{ marginBottom: 12, display: "flex", gap: 8 }}><AlertCircle size={14} />{error}</div>}
     {success && stage === 3 && <div className="success-note" style={{ marginBottom: 12 }}>{success}</div>}
-    {stage === 0 && <><TransactionReview onUpdate={setReview} onResume={()=>{setResult(null);setStage(3);}} onGenerated={setResult} /> <section className="panel"><div className="panel-head"><div><h2>Upload workbook</h2></div></div><div className="panel-body">{uploadArea}{busy && <div className="loading"><span className="spinner" />Reading workbook…</div>}{file && !busy && <div className="success-note" style={{ marginTop: 10 }}>{file.name} · {(file.size / 1024).toFixed(1)} KB</div>}</div></section></>}
+    {stage === 0 && <><TransactionReview onUpdate={setReview} onResume={()=>{setReviewRestored(true);setResult(null);setStage(3);}} onGenerated={setResult} restored={reviewRestored} /> <section className="panel"><div className="panel-head"><div><h2>Upload workbook</h2></div></div><div className="panel-body">{uploadArea}{busy && <div className="loading"><span className="spinner" />Reading workbook…</div>}{file && !busy && <div className="success-note" style={{ marginTop: 10 }}>{file.name} · {(file.size / 1024).toFixed(1)} KB</div>}</div></section></>}
     {stage === 1 && <><div className="panel" style={{ marginBottom: 12 }}><div className="panel-head"><div><h2>Review column mapping</h2><p className="subtext" style={{ marginTop: 4 }}>{file?.name} · {((file?.size ?? 0) / 1024).toLocaleString()} KB</p></div><button className="btn btn-small" onClick={() => { setStage(0); setError(""); }}><RotateCw size={13} />Change file</button></div><div className="panel-body">{mappingView}<div className="result-actions" style={{ justifyContent: "flex-end", marginTop: 14 }}><button className="btn btn-primary" onClick={() => { const validation = mappingSchema.safeParse({ invoiceCol, taxableCol }); if (!validation.success) setError(validation.error.issues[0]?.message ?? "Select valid columns."); else { setError(""); setStage(2); } }}>Continue to processing<ArrowRight size={14} /></button></div></div></div></>}
     {stage === 2 && <div className="panel"><div className="panel-head"><div><h2>Calculate GST rates</h2><p className="subtext" style={{ marginTop: 4 }}>Compare each row against supported 0%, 5%, 12%, 18%, and 28% GST rates.</p></div></div><div className="panel-body">
       <div className="mapping-row"><strong>Workbook</strong><span className="code-ref">{sheetName}</span><span>{file?.name}</span></div>
@@ -356,7 +358,7 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
 
   const verification = () => <>
     <div className="page-head"><div><div className="eyebrow">EXCEPTION REVIEW</div><h1>Verification</h1><p className="subtext">Review flagged rows and check the original workbook references.</p></div><span className="status REVIEW_REQUIRED">{review?.progress.remaining ?? result?.verification.length ?? 0} REMAINING</span></div>
-    {review ? <TransactionReview initial={review} onUpdate={setReview} onGenerated={setResult} /> : !result ? <div className="empty-state"><CircleHelp size={22} className="empty-icon" /><h2>No verification session</h2><p className="subtext" style={{ margin: "6px 0 14px" }}>Process a workbook to see flagged rows here.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}>Open processing workspace</button></div> : <div className="detail-layout"><section className="panel"><div className="panel-head"><div><h2>Flagged workbook rows</h2><p className="subtext" style={{ marginTop: 4 }}>Select a row to inspect rate comparison details.</p></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.verification} columns={verificationColumns} statusFilter onRowClick={setSelectedVerification} emptyText="No verification warnings." /></div></section>
+    {review ? <TransactionReview initial={review} onUpdate={setReview} onResume={()=>setReviewRestored(true)} onGenerated={setResult} restored={reviewRestored} /> : !result ? <div className="empty-state"><CircleHelp size={22} className="empty-icon" /><h2>No verification session</h2><p className="subtext" style={{ margin: "6px 0 14px" }}>Process a workbook to see flagged rows here.</p><button className="btn btn-primary" onClick={() => navigate("Process Excel")}>Open processing workspace</button></div> : <div className="detail-layout"><section className="panel"><div className="panel-head"><div><h2>Flagged workbook rows</h2><p className="subtext" style={{ marginTop: 4 }}>Select a row to inspect rate comparison details.</p></div></div><div className="panel-body" style={{ paddingTop: 5 }}><DataTable rows={result.verification} columns={verificationColumns} statusFilter onRowClick={setSelectedVerification} emptyText="No verification warnings." /></div></section>
       {selectedVerification && <aside className="panel detail-panel"><div className="panel-head"><div><h2>Row {selectedVerification.excel_row} details</h2><p className="subtext" style={{ marginTop: 4 }}>{selectedVerification.invoice_number || "Invoice number unavailable"}</p></div><button className="btn btn-small" aria-label="Close row details" onClick={() => setSelectedVerification(null)}><X size={13} /></button></div><div className="panel-body"><div style={{ marginBottom: 12 }}><Status status={selectedVerification.status} /></div><div className="detail-list">
         <Detail label="Worksheet" value={result.worksheet} /><Detail label="Actual Excel row" value={String(selectedVerification.excel_row)} />
         <Detail label="Invoice Value" value={formatDifference(selectedVerification.invoice_value)} />
@@ -382,7 +384,13 @@ export default function Home({accountActions}:{accountActions?:ReactNode}) {
 
 
   const view=page === "Dashboard" ? dashboard() : page === "Process Excel" ? processPage() : page === "Verification" ? verification() : settings();
-  return <WorkspaceShell active={page} subtitle={pageText[page]} accountActions={accountActions} headerExtra={<span className="file-chip" title={file?.name}>{file?.name ?? "No workbook selected"}</span>} onNavigate={next=>{if(next!=='My Files')navigate(next);}}>{view}</WorkspaceShell>;
+  const workbookLabel = file?.name ?? review?.filename;
+  const workbookTitle = review
+    ? file
+      ? `${reviewRestored ? "Restored review" : "Review in progress"}. This workbook is selected in the browser; generation uses the server-side source associated with the review.`
+      : `${reviewRestored ? "Restored review" : "Review in progress"}. No browser file is selected; generation retrieves and verifies the server-side source workbook.`
+    : file ? "Workbook selected in this browser." : "No workbook selected";
+  return <WorkspaceShell active={page} subtitle={pageText[page]} accountActions={accountActions} headerExtra={<span className="file-chip" title={workbookTitle}>{workbookLabel ?? "No workbook selected"}{review && !file && reviewRestored ? " · Review restored" : ""}</span>} onNavigate={next=>{if(next!=='My Files')navigate(next);}}>{view}</WorkspaceShell>;
 }
 
 function Detail({ label, value }: { label: string; value: string }) { return <div className="detail-item"><div className="detail-label">{label}</div><div className="detail-value">{value}</div></div>; }

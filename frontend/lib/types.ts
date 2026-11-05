@@ -100,7 +100,7 @@ export type ReviewSession = {
  generation_blockers?:string[];
  review_id:string;filename:string;worksheet:string;version:number;lease_until?:number|null;state:'open'|'generating'|'generated';expires_at:number;
  rows:ReviewRow[];excluded_rows:{row:number;reason:string}[];
- decisions:Record<string,{choice:'CORRECT'|'WRONG';rates:string[];saved_at:number;split_preview?:SplitPreview;split_confirmed?:boolean}>;
+ decisions:Record<string,{choice:'CORRECT'|'WRONG';rates:string[];saved_at:number;split_preview?:SplitPreview;split_confirmed?:boolean;split_complete?:boolean}>;
  progress:{total:number;matched:number;requiring_review:number;verified:number;remaining:number};
  result:ProcessResponse|null;
 };
